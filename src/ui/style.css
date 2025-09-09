@@ -1,0 +1,72 @@
+/* Layout */
+.container{
+  display:grid;
+  grid-template-columns: 256px 1fr;  /* fixed sidebar */
+  min-height:100vh;
+}
+
+/* Sidebar */
+.sidebar{
+  position: sticky;      /* stays in view */
+  top: 0;
+  height: 100vh;         /* full height */
+  overflow: auto;        /* <-- independent scroll */
+  padding: 16px 12px;
+  border-right: 1px solid var(--border);
+  background: var(--panel); /* matches your theme */
+}
+
+/* Brand */
+.brand{
+  display:flex;
+  align-items:center;
+  gap:8px;
+  font-weight:700;
+  margin-bottom:10px;
+}
+
+/* Nav list */
+.nav{
+  display:flex;
+  flex-direction:column;
+  gap:4px;
+  margin-top:8px;
+}
+
+.nav a{
+  display:block;
+  padding:10px 12px;
+  border-radius:10px;
+  color:var(--fg);
+  text-decoration:none;
+  white-space:nowrap;          /* keep one line */
+  overflow:hidden;             /* clip long text */
+  text-overflow:ellipsis;      /* … */
+  line-height:1.1;
+}
+
+.nav a.active{
+  background:var(--accent-ghost);
+  color:var(--accent);
+  font-weight:600;
+  border:1px solid var(--accent-ghost-border, transparent);
+}
+
+/* Small section label for groupings like “Blends” */
+.nav-section{
+  margin-top:10px;
+}
+.nav-label{
+  font-size:12px;
+  color:var(--muted);
+  padding:6px 12px;
+  text-transform:uppercase;
+  letter-spacing:.04em;
+}
+
+/* Optional: thinner scrollbar on sidebar (WebKit) */
+.sidebar::-webkit-scrollbar{ width:8px }
+.sidebar::-webkit-scrollbar-thumb{
+  background: var(--border);
+  border-radius: 8px;
+}
