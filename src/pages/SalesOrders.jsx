@@ -1,182 +1,234 @@
+// src/pages/SalesOrders.jsx
 import { useEffect, useMemo, useState } from 'react'
-import { supabase } from '../supabaseClient'
 import { Link } from 'react-router-dom'
-import { downloadCSV } from '../utils/csv'
 import * as XLSX from 'xlsx'
+import { supabase } from '../supabaseClient'
+import { downloadCSV } from '../utils/csv'
 import AsyncFGSelect from '../components/AsyncFGSelect.jsx'
 
-// Normalize header access
-function getCell(row, keys){
-  for(const k of keys){ if(row[k] !== undefined) return row[k] }
-  return ''
+function normalizeName(s){ return String(s||'').trim().toLowerCase() }
+
+async function fetchAllFinishedGoods(limit=1000){
+  let from=0,to=limit-1,out=[]
+  for(let i=0;i<20;i++){
+    const { data, error } = await supabase
+      .from('finished_goods')
+      .select('id,name',{count:'exact'})
+      .eq('is_active',true)
+      .order('name',{ascending:true})
+      .range(from,to)
+    if(error) throw error
+    out.push(...(data||[]))
+    if(!data || data.length<limit) break
+    from+=limit; to+=limit
+  }
+  return out
+}
+
+// --- helper to load bins per FG (no date in output) ---
+async function getBinsForFgNames(names){
+  if(!names.length) return {}
+  const { data: allBins, error } = await supabase
+    .from('v_bin_inventory')
+    .select('finished_good_name, bin_code, produced_at')
+  if(error){ console.error('v_bin_inventory', error); return {} }
+
+  const out = {}
+  const wanted = new Set(names.map(normalizeName))
+  ;(allBins||[]).forEach(r=>{
+    const fgKey = normalizeName(r.finished_good_name)
+    if(!wanted.has(fgKey)) return
+    if(!out[fgKey]) out[fgKey] = {}
+    const bin = r.bin_code || '—'
+    if(!out[fgKey][bin]) out[fgKey][bin] = { qty:0 }
+    out[fgKey][bin].qty += 1
+  })
+  const agg = {}
+  Object.entries(out).forEach(([fgKey,bins])=>{
+    agg[fgKey] = Object.entries(bins).map(([bin_code,v])=>({
+      bin_code, qty:v.qty
+    }))
+  })
+  return agg
 }
 
 export default function SalesOrders(){
   const [orders,setOrders]=useState([])
   const [customers,setCustomers]=useState([])
+  const [fgIndex,setFgIndex]=useState(new Map())
 
-  // create SO (manual small form)
   const [customer,setCustomer]=useState('')
+  const [soNumber,setSoNumber]=useState('')
   const [lines,setLines]=useState([{ finished_good_id:'', qty:'' }])
-  const [q,setQ]=useState('')
 
-  // import ONE SO
-  const [impCustomer,setImpCustomer]=useState('') // customer name
-  const [impSoNumber,setImpSoNumber]=useState('') // optional custom SO number
+  const [impCustomer,setImpCustomer]=useState('')
+  const [impSoNumber,setImpSoNumber]=useState('')
   const [importing,setImporting]=useState(false)
 
+  const [q,setQ]=useState('')
+  const [loading,setLoading]=useState(true)
+
+  // Hide shipped toggle
+  const [hideShipped, setHideShipped] = useState(true)
+
   async function load(){
-    const [{data:orders0},{data:cust0}] = await Promise.all([
-      supabase
-        .from('v_sales_orders')
-        .select('*')
-        .in('status', ['pending','partial'])  // <-- hide "cleared"
-        .order('id',{ascending:false}),
-      supabase
-        .from('customers')
-        .select('id,name')
-        .eq('is_active',true)
-        .order('name')
-        .range(0, 9999) // fetch all customers
+    setLoading(true)
+    const [{ data: list }, { data: cust }] = await Promise.all([
+      supabase.rpc('so_api_list'),
+      supabase.from('customers').select('id,name').eq('is_active',true).order('name')
     ])
-    setOrders(orders0||[])
-    setCustomers(cust0||[])
+    setOrders(list||[]); setCustomers(cust||[]); setLoading(false)
   }
 
-  useEffect(()=>{ load() },[])
+  async function buildFgIndex(){
+    try{
+      const fgs = await fetchAllFinishedGoods(1000)
+      setFgIndex(new Map(fgs.map(x=>[normalizeName(x.name), String(x.id)])))
+    }catch(e){ alert('Failed to load FG list: '+e.message) }
+  }
 
-  // realtime refresh on allocations/orders
+  useEffect(()=>{ load(); buildFgIndex() },[])
+
   useEffect(()=>{
     const ch = supabase
-      .channel('realtime:so')
-      .on('postgres_changes',{event:'*',schema:'public',table:'outward_allocations'},()=>load())
+      .channel('rt:sales')
       .on('postgres_changes',{event:'*',schema:'public',table:'sales_orders'},()=>load())
+      .on('postgres_changes',{event:'*',schema:'public',table:'outward_allocations'},()=>load())
       .subscribe()
     return ()=>supabase.removeChannel(ch)
   },[])
 
-  // ====== CREATE (manual) ======
-  function addLine(){ setLines(ls=>[...ls,{finished_good_id:'', qty:''}]) }
+  function addLine(){ setLines(ls=>[...ls,{finished_good_id:'',qty:''}]) }
   function removeLine(i){ setLines(ls=>ls.filter((_,idx)=>idx!==i)) }
   function updateLine(i,patch){ setLines(ls=>ls.map((l,idx)=>idx===i?{...l,...patch}:l)) }
 
   async function createSO(){
     const payload = lines
-      .map(l=>({ finished_good_id:Number(l.finished_good_id), qty:Number(l.qty) }))
-      .filter(l=>l.finished_good_id && l.qty>0)
-    if(!customer.trim()) return alert('Select/enter customer')
-    if(payload.length===0) return alert('Add at least one line')
-    const { error } = await supabase.rpc('create_sales_order_with_number', {
-      p_so_number: null,
+      .map(l=>({ finished_good_id:String(l.finished_good_id||'').trim(), qty:Number(l.qty) }))
+      .filter(l=>l.finished_good_id && Number.isFinite(l.qty) && l.qty>0)
+
+    if(!customer.trim()) return alert('Pick a customer')
+    if(payload.length===0) return alert('Add at least one item with qty>0')
+
+    const { error } = await supabase.rpc('so_api_create', {
       p_customer_name: customer.trim(),
-      p_lines: payload
+      p_lines: payload,
+      p_so_number: soNumber.trim() || null
     })
-    if(error){ alert(error.message); return }
-    setCustomer(''); setLines([{finished_good_id:'',qty:''}])
-    await load()   // stay on list
+    if(error) return alert(error.message)
+
+    setCustomer(''); setSoNumber('')
+    setLines([{finished_good_id:'',qty:''}])
+    load()
   }
 
+  async function onImportOneSO(e){
+    const f=e.target.files?.[0]; if(!f) return
+    if(!impCustomer.trim()){ alert('Pick Customer first'); e.target.value=''; return }
+    setImporting(true)
+    try{
+      const buf=await f.arrayBuffer()
+      const wb=XLSX.read(buf,{type:'array'})
+      const ws=wb.Sheets[wb.SheetNames[0]]
+      const rows=XLSX.utils.sheet_to_json(ws,{defval:''})
+      if(rows.length===0) throw new Error('No rows found')
+
+      const merged={}
+      for(const r of rows){
+        const name=String(r['Finished Good']??r['finished good']??r['FG']??r['fg']??'').trim()
+        const qty=Number(r['Qty']??r['qty']??0)
+        if(!name || !(qty>0)) throw new Error('Need "Finished Good" and positive "Qty"')
+        const id=fgIndex.get(normalizeName(name)); if(!id) throw new Error(`FG not found: ${name}`)
+        merged[id]=(merged[id]||0)+qty
+      }
+      const payload=Object.entries(merged).map(([id,qty])=>({finished_good_id:String(id),qty}))
+      const { error } = await supabase.rpc('so_api_create', {
+        p_customer_name: impCustomer.trim(),
+        p_lines: payload,
+        p_so_number: impSoNumber.trim() || null
+      })
+      if(error) throw error
+      alert('SO created from file')
+      setImpSoNumber(''); load()
+    }catch(err){ alert(err.message) }
+    finally{ setImporting(false); e.target.value='' }
+  }
+
+  // FILTER: hide shipped (toggle) + search
   const filtered = useMemo(()=>{
-    const qq=q.trim().toLowerCase()
-    return (orders||[]).filter(o=>{
-      return !qq || String(o.so_number||'').toLowerCase().includes(qq) || String(o.customer_name||'').toLowerCase().includes(qq)
-    })
-  },[orders,q])
+    const s=q.trim().toLowerCase()
+    return (orders||[]).filter(o =>
+      (hideShipped ? o.status !== 'shipped' : true) &&
+      (
+        !s ||
+        String(o.so_number||'').toLowerCase().includes(s) ||
+        String(o.customer_name||'').toLowerCase().includes(s)
+      )
+    )
+  },[orders,q,hideShipped])
 
   function exportOrders(){
     downloadCSV('sales_orders.csv', filtered.map(o=>({
-      id:o.id, so_number:o.so_number, customer:o.customer_name, status:o.status,
-      qty_ordered:o.qty_ordered_total, qty_shipped:o.qty_shipped_total, created_at:o.created_at
+      id:o.id, so_number:o.so_number, customer:o.customer_name,
+      status:o.status, shipped:o.qty_shipped_total, ordered:o.qty_ordered_total, created_at:o.created_at
     })))
   }
 
-  // ====== IMPORT ONE SO (CSV/Excel with FG + Qty) ======
-  async function onImportOneSO(e){
-    const file = e.target.files?.[0]
-    if(!file) return
-    if(!impCustomer.trim()){
-      alert('Please select a Customer first for this SO.')
-      e.target.value=''
-      return
-    }
-    setImporting(true)
+  // ---- Print one SO ----
+  async function printSO(order){
     try{
-      const buf = await file.arrayBuffer()
-      const wb = XLSX.read(buf, { type:'array' })
-      const ws = wb.Sheets[wb.SheetNames[0]]
-      const rows = XLSX.utils.sheet_to_json(ws, { defval:'' })
-
-      if(rows.length===0){ alert('No rows found'); return }
-
-      // Accept flexible headers
-      // "Finished Good" | "finished_good" | "FG" etc.
-      // "Qty" | "qty"
-      const merged = {} // finished_good_id => qty sum
-      const namesNeeded = new Set()
-
-      // First pass: collect product names, basic validation for qty
-      for(const r of rows){
-        const rawName = String(getCell(r, ['Finished Good','finished_good','finished good','FG','fg'])).trim()
-        const qtyVal  = Number(getCell(r, ['Qty','qty']))
-        if(!rawName || !qtyVal || qtyVal<=0){
-          alert(`Invalid row. Need "Finished Good" and positive "Qty". Row: ${JSON.stringify(r)}`)
-          return
-        }
-        namesNeeded.add(rawName)
+      const [{ default: jsPDF }, { default: autoTable }] = await Promise.all([
+        import('jspdf'),
+        import('jspdf-autotable')
+      ])
+      const doc = new jsPDF()
+      doc.setFontSize(14)
+      doc.text(`Sales Order ${order.so_number || order.id}`, 14, 16)
+      doc.setFontSize(11)
+      doc.text(`Customer: ${order.customer_name || '-'}`, 14, 24)
+      if(order.created_at){
+        doc.text(`Created: ${new Date(order.created_at).toLocaleString()}`, 14, 31)
       }
 
-      // Resolve FG names -> ids using a single query with IN (scales to thousands)
-      const nameList = Array.from(namesNeeded)
-      // If you have > 10k names in one file (unlikely), split into chunks
-      const { data:fgs, error:fgErr } = await supabase
-        .from('finished_goods')
-        .select('id,name')
-        .in('name', nameList)
-      if(fgErr){ alert(fgErr.message); return }
+      // Fetch lines + bins
+      const { data: lines } = await supabase.from('v_so_lines').select('*').eq('sales_order_id', order.id)
+      const fgNames = (lines||[]).map(l=>l.finished_good_name).filter(Boolean)
+      const binsByFg = await getBinsForFgNames(fgNames)
 
-      const fgMap = new Map(fgs.map(f=>[f.name.toLowerCase(), f.id]))
-
-      // Second pass: build payload merging duplicate items
-      for(const r of rows){
-        const rawName = String(getCell(r, ['Finished Good','finished_good','finished good','FG','fg'])).trim()
-        const qtyVal  = Number(getCell(r, ['Qty','qty']))
-        const id = fgMap.get(rawName.toLowerCase())
-        if(!id){
-          alert(`Finished Good not found: "${rawName}" — check exact name`)
-          return
-        }
-        merged[id] = (merged[id]||0) + qtyVal
-      }
-
-      const payload = Object.keys(merged).map(k=>({
-        finished_good_id: Number(k),
-        qty: merged[k]
-      }))
-
-      const { error } = await supabase.rpc('create_sales_order_with_number', {
-        p_so_number: impSoNumber.trim() || null,       // optional custom number
-        p_customer_name: impCustomer.trim(),           // chosen from dropdown
-        p_lines: payload
+      const body = (lines||[]).map(l=>{
+        const fgName = l.finished_good_name || ''
+        const bins = binsByFg[normalizeName(fgName)] || []
+        const binsText = bins.length
+          ? bins.map(b => `${b.bin_code}: ${b.qty}`).join(', ')
+          : '—'
+        return [
+          fgName,
+          `${Number(l.qty_shipped||0)} / ${Number(l.qty_ordered||0)}`,
+          binsText
+        ]
       })
-      if(error){ alert(error.message); return }
 
-      await load()
-      alert('Sales Order created from file')
-      setImpSoNumber('')
-    } finally {
-      setImporting(false)
-      e.target.value='' // reset file input
+      autoTable(doc, {
+        startY: 38,
+        head: [['Finished Good', 'Shipped / Ordered', 'Bins']],
+        body,
+        styles: { fontSize: 10, cellPadding: 2 },
+        columnStyles: { 1: { halign:'right', cellWidth: 35 } }
+      })
+
+      doc.save(`SO_${order.so_number || order.id}.pdf`)
+    }catch(err){
+      alert('Failed to print: ' + (err?.message || String(err)))
     }
   }
 
   return (
     <div className="grid">
-
-      {/* IMPORT ONE SO */}
+      {/* Import ONE SO */}
       <div className="card">
-        <div className="hd"><b>Import ONE Sales Order (CSV/Excel)</b></div>
+        <div className="hd"><b>Import ONE Sales Order</b></div>
         <div className="bd">
-          <div className="row" style={{gap:8, marginBottom:8}}>
+          <div className="row" style={{gap:8}}>
             <select value={impCustomer} onChange={e=>setImpCustomer(e.target.value)}>
               <option value="">Select Customer</option>
               {customers.map(c=><option key={c.id} value={c.name}>{c.name}</option>)}
@@ -184,62 +236,66 @@ export default function SalesOrders(){
             <input placeholder="SO Number (optional)" value={impSoNumber} onChange={e=>setImpSoNumber(e.target.value)} />
             <input type="file" accept=".xlsx,.xls,.csv" onChange={onImportOneSO} disabled={importing}/>
           </div>
-          <div className="s" style={{color:'var(--muted)'}}>
-            File columns required: <code>Finished Good</code>, <code>Qty</code>.  
-            All rows go into <b>one</b> SO for the selected customer. Duplicate items are merged.  
-            Finished Goods are resolved by name on the server (no 1k cap).
-          </div>
+          <div className="s" style={{color:'var(--muted)'}}>Columns: <code>Finished Good</code>, <code>Qty</code>.</div>
         </div>
       </div>
 
-      {/* CREATE MANUALLY */}
+      {/* Manual create */}
       <div className="card">
         <div className="hd"><b>Create Sales Order (Manual)</b></div>
-        <div className="bd">
-          <div className="row">
-            <select value={customer} onChange={e=>setCustomer(e.target.value)}>
+        <div className="bd" style={{display:'grid', gap:10}}>
+          <div className="row" style={{gap:8}}>
+            <select value={customer} onChange={e=>setCustomer(e.target.value)} style={{minWidth:260}}>
               <option value="">Select Customer</option>
               {customers.map(c=><option key={c.id} value={c.name}>{c.name}</option>)}
             </select>
+            <input placeholder="SO Number (optional)" value={soNumber} onChange={e=>setSoNumber(e.target.value)} />
           </div>
-          <table className="table" style={{marginTop:8}}>
-            <thead><tr><th>Finished Good</th><th>Qty</th><th></th></tr></thead>
+
+          <table className="table">
+            <thead><tr><th style={{width:'50%'}}>Finished Good</th><th style={{width:120}}>Qty</th><th></th></tr></thead>
             <tbody>
               {lines.map((l,idx)=>(
                 <tr key={idx}>
                   <td>
-                    {/* Dynamic, type-to-search dropdown (no preload cap) */}
                     <AsyncFGSelect
                       value={l.finished_good_id}
-                      onChange={(id)=>updateLine(idx,{ finished_good_id:id })}
-                      placeholder="Search finished goods by name…"
+                      onChange={(id)=>updateLine(idx,{finished_good_id:String(id||'')})}
+                      placeholder="Search finished goods…"
                       minChars={1}
                       pageSize={25}
                     />
                   </td>
-                  <td>
-                    <input type="number" min="1" value={l.qty} onChange={e=>updateLine(idx,{qty:e.target.value})}/>
-                  </td>
-                  <td>
-                    <button className="btn ghost" onClick={()=>removeLine(idx)}>✕</button>
-                  </td>
+                  <td><input type="number" min="1" value={l.qty} onChange={e=>updateLine(idx,{qty:e.target.value})}/></td>
+                  <td><button className="btn ghost" onClick={()=>removeLine(idx)}>✕</button></td>
                 </tr>
               ))}
             </tbody>
           </table>
-          <div className="row" style={{marginTop:8}}>
-            <button className="btn outline" onClick={()=>addLine()}>+ Add Line</button>
+
+          <div className="row" style={{marginTop:4}}>
+            <button className="btn outline" onClick={addLine}>+ Add Line</button>
             <button className="btn" onClick={createSO}>Create Order</button>
           </div>
         </div>
       </div>
 
-      {/* LIST */}
+      {/* List */}
       <div className="card">
         <div className="hd">
           <b>Orders</b>
           <div className="row">
             <input placeholder="Search SO / Customer…" value={q} onChange={e=>setQ(e.target.value)} />
+            {/* Hide shipped toggle */}
+            <label className="row" style={{gap:6, marginLeft:8}}>
+              <input
+                type="checkbox"
+                checked={hideShipped}
+                onChange={e=>setHideShipped(e.target.checked)}
+                title="Hide fully shipped orders"
+              />
+              Hide shipped
+            </label>
             <button className="btn" onClick={exportOrders} disabled={!filtered.length}>Export CSV</button>
             <Link to="/outward" className="btn outline">Open Outward</Link>
           </div>
@@ -251,22 +307,24 @@ export default function SalesOrders(){
                 <th>SO</th><th>Customer</th><th>Status</th>
                 <th style={{textAlign:'right'}}>Shipped / Ordered</th>
                 <th>Created</th>
+                <th>Actions</th>
               </tr>
             </thead>
             <tbody>
-              {filtered.map(o=>{
-                return (
-                  <tr key={o.id}>
-                    <td>{o.so_number || o.id}</td>
-                    <td>{o.customer_name}</td>
-                    <td><span className="badge">{o.status}</span></td>
-                    <td style={{textAlign:'right'}}>{o.qty_shipped_total} / {o.qty_ordered_total}</td>
-                    <td>{new Date(o.created_at).toLocaleString()}</td>
-                  </tr>
-                )
-              })}
+              {filtered.map(o=>(
+                <tr key={o.id}>
+                  <td><Link to={`/outward?so=${o.id}`}>{o.so_number || o.id}</Link></td>
+                  <td>{o.customer_name}</td>
+                  <td><span className="badge">{o.status}</span></td>
+                  <td style={{textAlign:'right'}}>{o.qty_shipped_total} / {o.qty_ordered_total}</td>
+                  <td>{new Date(o.created_at).toLocaleString()}</td>
+                  <td>
+                    <button className="btn outline" onClick={()=>printSO(o)}>Print</button>
+                  </td>
+                </tr>
+              ))}
               {filtered.length===0 && (
-                <tr><td colSpan="5" style={{color:'var(--muted)'}}>No orders</td></tr>
+                <tr><td colSpan="6" style={{color:'var(--muted)'}}>{loading ? 'Loading…' : 'No orders'}</td></tr>
               )}
             </tbody>
           </table>

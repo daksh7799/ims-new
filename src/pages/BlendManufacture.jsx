@@ -1,3 +1,4 @@
+// src/pages/BlendManufacture.jsx
 import { useEffect, useMemo, useState } from 'react'
 import { supabase } from '../supabaseClient'
 import { useToast } from '../ui/toast.jsx'
@@ -5,12 +6,13 @@ import { useToast } from '../ui/toast.jsx'
 function num(x, d=0){ const n = Number(x); return Number.isFinite(n) ? n : d }
 
 export default function BlendManufacture(){
-  const { push } = useToast()
+  const { push } = useToast?.() || { push:(m)=>alert(m) }
 
-  // Output RM to produce (Diet Atta / Salt Mix, etc.)
+  // Output RM to produce (only from active blend recipes)
   const [rms, setRms] = useState([])              // [{id,name}]
   const [outputId, setOutputId] = useState('')
   const [qtyKg, setQtyKg] = useState('1')
+  const [note, setNote] = useState('')
 
   // Loaded recipe + inventory
   const [recipe, setRecipe] = useState([])        // [{component_rm_id, component_name, qty_per_kg}]
@@ -19,20 +21,24 @@ export default function BlendManufacture(){
   // UI
   const [loading, setLoading] = useState(false)
   const [manufacturing, setManufacturing] = useState(false)
-  const [strict, setStrict] = useState(true)
 
-  // Load output RMs for dropdown
+  // Load only outputs that have an ACTIVE blend recipe
   useEffect(()=>{
     (async ()=>{
       const { data, error } = await supabase
-        .from('raw_materials')
-        .select('id,name')
+        .from('v_blends_list')
+        .select('output_raw_material_id, output_name, is_active')
         .eq('is_active', true)
-        .order('name')
+        .order('output_name', { ascending: true })
       if(error){ push(error.message,'err'); return }
-      setRms(data||[])
+      const options = (data||[]).map(r => ({ id: r.output_raw_material_id, name: r.output_name }))
+      setRms(options)
+      // Clear invalid selection if needed
+      if (options.length && outputId && !options.some(o => String(o.id)===String(outputId))) {
+        setOutputId('')
+      }
     })()
-  },[push])
+  },[push]) // eslint-disable-line react-hooks/exhaustive-deps
 
   // Load recipe + inventory whenever outputId changes
   useEffect(()=>{
@@ -40,28 +46,19 @@ export default function BlendManufacture(){
     (async ()=>{
       setLoading(true)
       try{
-        // 1) fetch active blend for this output RM → components
         const { data: comps, error: e1 } = await supabase
-          .from('rm_blend_components')
-          .select('component_rm_id, qty_per_kg, raw_materials(name)')
-          .eq('blend_id',
-            (await supabase
-              .from('rm_blends')
-              .select('id')
-              .eq('output_raw_material_id', outputId)
-              .eq('is_active', true)
-              .limit(1)
-            ).data?.[0]?.id || -1
-          )
+          .from('v_blend_recipe_for_output')
+          .select('component_rm_id, component_name, qty_per_kg')
+          .eq('output_rm_id', outputId)
+          .order('component_name')
         if(e1){ push(e1.message,'err'); setRecipe([]); setInv({}); return }
         const shaped = (comps||[]).map(c=>({
           component_rm_id: c.component_rm_id,
-          component_name: c.raw_materials?.name || c.component_rm_id,
+          component_name: c.component_name,
           qty_per_kg: num(c.qty_per_kg, 0)
         }))
         setRecipe(shaped)
 
-        // 2) fetch inventory for those RM ids
         const ids = shaped.map(c=>c.component_rm_id)
         if(ids.length){
           const { data: invRows } = await supabase
@@ -80,7 +77,6 @@ export default function BlendManufacture(){
     })()
   },[outputId, push])
 
-  // Derived rows with requirements
   const qty = useMemo(()=> num(qtyKg, 0), [qtyKg])
   const rows = useMemo(()=>{
     return recipe.map(r=>{
@@ -93,31 +89,34 @@ export default function BlendManufacture(){
 
   const insufficient = useMemo(()=> rows.some(r=>r.short), [rows])
 
+  async function refreshInv(){
+    const ids = recipe.map(c=>c.component_rm_id)
+    if(!ids.length) return
+    const { data: invRows } = await supabase
+      .from('v_raw_inventory')
+      .select('id, qty_on_hand')
+      .in('id', ids)
+    const map = {}
+    ;(invRows||[]).forEach(r=>{ map[r.id] = num(r.qty_on_hand, 0) })
+    setInv(map)
+  }
+
   async function manufacture(){
     if(!outputId) return push('Pick an output raw material','warn')
     if(qty <= 0)  return push('Enter a valid quantity (kg)','warn')
-    if(strict && insufficient) return push('Insufficient stock for one or more components','err')
+    if(insufficient) return push('Insufficient stock for one or more components','err')
 
     setManufacturing(true)
     try{
+      // p_output_rm_id must be UUID string, p_qty_kg numeric
       const { error } = await supabase.rpc('manufacture_blend', {
-        p_output_rm_id: Number(outputId),
+        p_output_rm_id: String(outputId),
         p_qty_kg: qty,
-        p_strict: strict
+        p_note: note || null
       })
       if(error){ push(error.message,'err'); return }
       push(`Manufactured ${qty} kg`, 'ok')
-      // refresh inventory snapshot
-      const ids = recipe.map(c=>c.component_rm_id)
-      if(ids.length){
-        const { data: invRows } = await supabase
-          .from('v_raw_inventory')
-          .select('id, qty_on_hand')
-          .in('id', ids.concat(Number(outputId)))
-        const map = {}
-        ;(invRows||[]).forEach(r=>{ map[r.id] = num(r.qty_on_hand, 0) })
-        setInv(map)
-      }
+      await refreshInv()
     } finally {
       setManufacturing(false)
     }
@@ -126,7 +125,7 @@ export default function BlendManufacture(){
   return (
     <div className="grid">
       <div className="card">
-        <div className="hd"><b>Blend Manufacture (Aata / Salt)</b></div>
+        <div className="hd"><b>Blend Manufacture (Multiple RMs → One RM)</b></div>
 
         <div className="bd" style={{display:'grid', gap:10}}>
           <div className="row" style={{gap:8, flexWrap:'wrap', alignItems:'center'}}>
@@ -141,15 +140,17 @@ export default function BlendManufacture(){
               style={{width:140}}
               placeholder="Qty (kg)"
             />
-            <label className="row" style={{gap:6}}>
-              <input type="checkbox" checked={strict} onChange={e=>setStrict(e.target.checked)} />
-              Strict (block if short)
-            </label>
+            <input
+              placeholder="Note (optional)"
+              value={note}
+              onChange={e=>setNote(e.target.value)}
+              style={{ minWidth: 220 }}
+            />
             <button
               className="btn"
               onClick={manufacture}
-              disabled={!outputId || qty<=0 || manufacturing || (strict && insufficient)}
-              title={strict && insufficient ? 'Insufficient stock' : ''}
+              disabled={!outputId || qty<=0 || manufacturing || insufficient}
+              title={insufficient ? 'Insufficient stock' : ''}
             >
               {manufacturing ? 'Manufacturing…' : 'Manufacture'}
             </button>
@@ -183,7 +184,7 @@ export default function BlendManufacture(){
                     </tr>
                   ))}
                   {rows.length===0 && (
-                    <tr><td colSpan="5" style={{color:'var(--muted)'}}>
+                    <tr><td colSpan={5} style={{color:'var(--muted)'}}>
                       {outputId ? 'No active recipe defined for this output raw material' : 'Pick an output raw material to view recipe'}
                     </td></tr>
                   )}
@@ -191,15 +192,16 @@ export default function BlendManufacture(){
               </table>
               {insufficient && (
                 <div className="s" style={{color:'var(--error)', marginTop:6}}>
-                  One or more components are short. Uncheck <b>Strict</b> to allow negative stock, or add raw material first.
+                  One or more components are short. Add RM inward or reduce quantity.
                 </div>
               )}
             </div>
           </div>
 
           <div className="s" style={{color:'var(--muted)'}}>
-            This uses your <code>rm_blends</code> + <code>rm_blend_components</code> recipe and writes to <code>stock_ledger</code> with reasons
-            <code> blend_consume</code> / <code>blend_produce</code>. Raw inventory is calculated by <code>v_raw_inventory</code>.
+            Uses <code>blends</code>, <code>blend_components</code>, <code>v_blend_recipe_for_output</code>, and <code>v_raw_inventory</code>.<br/>
+            Writes to <code>stock_ledger</code> with reasons <code>blend_consume</code> / <code>blend_produce</code>.  
+            Manufacturing is strictly blocked if any component would go negative.
           </div>
         </div>
       </div>

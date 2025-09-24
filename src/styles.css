@@ -200,3 +200,23 @@ body[data-theme="light"]{
   --ring: rgba(139,92,246,.25);
   --shadow-1: 0 10px 30px rgba(10,20,60,.08);
 }
+/* Finished Goods card scroll */
+.fg-scroll {
+  max-height: 320px;   /* adjust height to your preference */
+  overflow-y: auto;
+  border-radius: var(--radius-sm);
+  scrollbar-width: thin;
+  scrollbar-color: var(--muted) transparent;
+}
+
+.fg-scroll::-webkit-scrollbar {
+  height: 8px;
+  width: 8px;
+}
+.fg-scroll::-webkit-scrollbar-thumb {
+  background: var(--muted);
+  border-radius: 6px;
+}
+.fg-scroll::-webkit-scrollbar-track {
+  background: transparent;
+}

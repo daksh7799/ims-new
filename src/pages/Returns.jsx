@@ -1,123 +1,290 @@
-import { useEffect, useRef, useState } from 'react'
-import { supabase } from '../supabaseClient'
-import { useToast } from '../ui/toast.jsx'
-import AsyncFGSelect from '../components/AsyncFGSelect.jsx'
+import { useEffect, useMemo, useRef, useState } from "react";
+import { supabase } from "../supabaseClient";
+import AsyncFGSelect from "../components/AsyncFGSelect.jsx";
+
+function fmt(d){
+  if(!d) return "—";
+  const t = typeof d === "string" ? Date.parse(d) : d;
+  if(Number.isNaN(t)) return "—";
+  return new Date(t).toLocaleString();
+}
 
 export default function Returns(){
-  const { push } = useToast()
+  const [tab, setTab] = useState("scan"); // scan | nobarcode | scrap
 
-  // Scan return
-  const [scan,setScan]=useState('')
-  const scanRef = useRef(null)
-  const inFlight = useRef(false)
+  // Return by Scan
+  const [scanCode, setScanCode] = useState("");
+  const [scanNote, setScanNote] = useState("");
+  const [scanBusy, setScanBusy] = useState(false);
+  const [autoScan, setAutoScan] = useState(true);
+  const scanTimer = useRef(null);
+  const scanRef = useRef(null);
 
-  // No-barcode (good)
-  const [nbFg,setNbFg]=useState('')
-  const [nbQty,setNbQty]=useState(1)
-  const [nbNote,setNbNote]=useState('')
+  // No-barcode
+  const [nbFgId, setNbFgId] = useState("");
+  const [nbQty, setNbQty] = useState(1);
+  const [nbNote, setNbNote] = useState("");
+  const [nbBusy, setNbBusy] = useState(false);
 
-  // Scrap by barcode
-  const [scrapCode,setScrapCode]=useState('')
-  const [scrapNote,setScrapNote]=useState('')
+  // Scrap
+  const [scrapCode, setScrapCode] = useState("");
+  const [scrapNote, setScrapNote] = useState("");
+  const [scrapBusy, setScrapBusy] = useState(false);
+  const [autoScrap, setAutoScrap] = useState(true);
+  const scrapTimer = useRef(null);
+  const scrapRef = useRef(null);
 
-  // Scan return
-  async function doScanReturn(code){
-    const pkt = (code||'').trim()
-    if(!pkt || inFlight.current) return
+  // Recent
+  const [rows, setRows] = useState([]);
+  const [q, setQ] = useState("");
+  const [loadingRows, setLoadingRows] = useState(false);
+
+  async function loadRows(){
+    setLoadingRows(true);
+    const { data, error } = await supabase
+      .from("v_returns")
+      .select("*")
+      .order("id", { ascending:false })
+      .limit(200);
+    if(error){ console.error(error); setRows([]); }
+    else setRows(data || []);
+    setLoadingRows(false);
+  }
+  useEffect(()=>{ loadRows(); }, []);
+
+  const visible = useMemo(()=>{
+    const s=q.trim().toLowerCase();
+    return (rows||[]).filter(r=>
+      !s ||
+      String(r.packet_code||"").toLowerCase().includes(s) ||
+      String(r.finished_good_name||"").toLowerCase().includes(s) ||
+      String(r.reason||"").toLowerCase().includes(s) ||
+      String(r.note||"").toLowerCase().includes(s)
+    );
+  },[rows,q]);
+
+  // === Actions
+  async function doReturnByScan(code){
+    const barcode = (code||"").trim();
+    if(!barcode || scanBusy) return;
+    setScanBusy(true);
     try{
-      inFlight.current = true
-      const { error } = await supabase.rpc('return_packet_scan', { p_packet_code: pkt })
-      if(error){ push(error.message, 'err'); return }
-      setScan('')
-      push('Packet marked as returned', 'ok')
+      const { error } = await supabase.rpc("return_packet_scan", {
+        p_packet_code: barcode,
+        p_note: scanNote || null
+      });
+      if(error){ alert(error.message); return; }
+      setScanCode(""); setScanNote("");
+      await loadRows();
     } finally {
-      inFlight.current = false
-      scanRef.current?.focus()
+      setScanBusy(false);
+      setTimeout(()=>scanRef.current?.focus(),0);
     }
   }
 
-  // No-barcode return (good)
-  async function addNoBarcode(){
-    const fg = Number(nbFg); const qty = Number(nbQty||0)
-    if(!fg || qty<=0) return push('Select finished good and valid qty', 'warn')
-    const { error } = await supabase.rpc('return_no_barcode', {
-      p_finished_good_id: fg,
-      p_qty_units: qty,
-      p_note: nbNote || null
-    })
-    if(error){ push(error.message, 'err'); return }
-    setNbQty(1); setNbNote('')
-    push('Returned (new barcodes created). Print from Live Barcodes.', 'ok')
+  function onScanKey(e){ if(e.key==='Enter'){ e.preventDefault(); doReturnByScan(scanCode); } }
+  useEffect(()=>{
+    if(tab!=='scan' || !autoScan) return;
+    const v = scanCode.trim();
+    if(!v) return;
+    clearTimeout(scanTimer.current);
+    scanTimer.current = setTimeout(()=>doReturnByScan(v), 140);
+    return ()=>clearTimeout(scanTimer.current);
+  },[scanCode, autoScan, tab]);
+
+  async function doNoBarcode(){
+    if(!nbFgId){ alert("Pick a Finished Good"); return; }
+    const qty = Number(nbQty);
+    if(!Number.isFinite(qty) || qty<=0){ alert("Qty must be positive"); return; }
+    setNbBusy(true);
+    try{
+      // p_finished_good_id must be UUID string (as finished_goods.id)
+      const { error } = await supabase.rpc("return_no_barcode", {
+        p_finished_good_id: String(nbFgId),
+        p_qty_units: qty,
+        p_note: nbNote || null
+      });
+      if(error){ alert(error.message); return; }
+      setNbFgId(""); setNbQty(1); setNbNote("");
+      await loadRows();
+    } finally { setNbBusy(false); }
   }
 
-  // Scrap by barcode only
-  async function scrapByBarcode(){
-    const code = scrapCode.trim()
-    if(!code) return push('Enter packet barcode to scrap', 'warn')
-    const { error } = await supabase.rpc('scrap_packet_by_barcode', {
-      p_packet_code: code,
-      p_note: scrapNote || null
-    })
-    if(error){ push(error.message, 'err'); return }
-    setScrapCode('')
-    push('Scrapped packet and credited raw materials', 'ok')
+  async function doScrapByScan(code){
+    const barcode = (code||"").trim();
+    if(!barcode || scrapBusy) return;
+    setScrapBusy(true);
+    try{
+      const { data, error } = await supabase.rpc("scrap_packet_by_barcode", {
+        p_packet_code: barcode,
+        p_note: scrapNote || null
+      });
+      if(error){ alert(error.message); return; }
+      // optional action response
+      if(data?.action === 'logged_only'){
+        console.log('Scrap logged (no double FG OUT).');
+      }
+      setScrapCode(""); setScrapNote("");
+      await loadRows();
+    } finally {
+      setScrapBusy(false);
+      setTimeout(()=>scrapRef.current?.focus(),0);
+    }
   }
+
+  function onScrapKey(e){ if(e.key==='Enter'){ e.preventDefault(); doScrapByScan(scrapCode); } }
+  useEffect(()=>{
+    if(tab!=='scrap' || !autoScrap) return;
+    const v = scrapCode.trim();
+    if(!v) return;
+    clearTimeout(scrapTimer.current);
+    scrapTimer.current = setTimeout(()=>doScrapByScan(v), 140);
+    return ()=>clearTimeout(scrapTimer.current);
+  },[scrapCode, autoScrap, tab]);
 
   return (
     <div className="grid">
-
-      {/* SCAN RETURN */}
       <div className="card">
-        <div className="hd"><b>Return by Scanning Barcode</b></div>
-        <div className="bd">
-          <form onSubmit={(e)=>{ e.preventDefault(); doScanReturn(scan) }} className="row">
-            <input
-              ref={scanRef}
-              placeholder="Scan / Enter packet barcode"
-              value={scan}
-              onChange={e=>setScan(e.target.value)}
-              autoFocus
-              style={{minWidth:320}}
-            />
-            <button className="btn">Return</button>
-          </form>
-          <div className="s" style={{color:'var(--muted)', marginTop:6}}>
-            Packet status → <code>returned</code>. Ledger adds FG <b>in</b> (<code>customer_return</code>).
+        <div className="hd">
+          <b>Returns</b>
+          <div className="row">
+            <button className={`btn ${tab==='scan'?'':'outline'}`} onClick={()=>setTab('scan')}>Return by Scan</button>
+            <button className={`btn ${tab==='nobarcode'?'':'outline'}`} onClick={()=>setTab('nobarcode')}>Return (No Barcode)</button>
+            <button className={`btn ${tab==='scrap'?'':'outline'}`} onClick={()=>setTab('scrap')}>Scrap by Scan</button>
           </div>
         </div>
+
+        {tab==='scan' && (
+          <div className="bd" style={{display:'grid', gap:10}}>
+            <div className="row" style={{gap:8, alignItems:'center', flexWrap:'wrap'}}>
+              <input
+                ref={scanRef}
+                placeholder="Scan / Enter packet barcode (must be shipped)"
+                value={scanCode}
+                onChange={e=>setScanCode(e.target.value)}
+                onKeyDown={onScanKey}
+                style={{minWidth:360}}
+                autoFocus
+                disabled={scanBusy}
+              />
+              <input
+                placeholder="Note (optional)"
+                value={scanNote}
+                onChange={e=>setScanNote(e.target.value)}
+                style={{minWidth:260}}
+              />
+              <button className="btn" onClick={()=>doReturnByScan(scanCode)} disabled={scanBusy}>
+                {scanBusy ? "Working…" : "Accept Return"}
+              </button>
+              <label className="row" style={{gap:6}}>
+                <input type="checkbox" checked={autoScan} onChange={e=>setAutoScan(e.target.checked)} />
+                Auto-scan
+              </label>
+            </div>
+            <div className="s" style={{color:'var(--muted)'}}>
+              Only previously shipped packets can be returned.
+            </div>
+          </div>
+        )}
+
+        {tab==='nobarcode' && (
+          <div className="bd" style={{display:'grid', gap:10}}>
+            <div className="row" style={{gap:8, alignItems:'center', flexWrap:'wrap'}}>
+              <AsyncFGSelect
+                value={nbFgId}
+                onChange={(id)=>setNbFgId(id)}
+                placeholder="Select finished good…"
+                minChars={1}
+                pageSize={25}
+              />
+              <input
+                type="number"
+                min="1"
+                value={nbQty}
+                onChange={e=>setNbQty(e.target.value)}
+                style={{width:120}}
+              />
+              <input
+                placeholder="Note (optional)"
+                value={nbNote}
+                onChange={e=>setNbNote(e.target.value)}
+                style={{minWidth:260}}
+              />
+              <button className="btn" onClick={doNoBarcode} disabled={nbBusy}>
+                {nbBusy ? "Working…" : "Create Returns"}
+              </button>
+            </div>
+            <div className="s" style={{color:'var(--muted)'}}>
+              Creates new packet(s) into inventory (FG IN with reason <code>return_no_barcode</code>).  
+              They’ll appear in Live Barcodes as <i>No-Barcode Return</i> and with status <b>returned</b>.
+            </div>
+          </div>
+        )}
+
+        {tab==='scrap' && (
+          <div className="bd" style={{display:'grid', gap:10}}>
+            <div className="row" style={{gap:8, alignItems:'center', flexWrap:'wrap'}}>
+              <input
+                ref={scrapRef}
+                placeholder="Scan / Enter packet barcode"
+                value={scrapCode}
+                onChange={e=>setScrapCode(e.target.value)}
+                onKeyDown={onScrapKey}
+                style={{minWidth:360}}
+                disabled={scrapBusy}
+              />
+              <input
+                placeholder="Note (optional)"
+                value={scrapNote}
+                onChange={e=>setScrapNote(e.target.value)}
+                style={{minWidth:260}}
+              />
+              <button className="btn" onClick={()=>doScrapByScan(scrapCode)} disabled={scrapBusy}>
+                {scrapBusy ? "Working…" : "Scrap"}
+              </button>
+              <label className="row" style={{gap:6}}>
+                <input type="checkbox" checked={autoScrap} onChange={e=>setAutoScrap(e.target.checked)} />
+                Auto-scan
+              </label>
+            </div>
+            <div className="s" style={{color:'var(--muted)'}}>
+              If the packet was shipped and not yet returned, scrap is logged only (no double FG OUT).
+            </div>
+          </div>
+        )}
       </div>
 
-      {/* NO BARCODE (GOOD) */}
       <div className="card">
-        <div className="hd"><b>Good Packet but Barcode Missing</b></div>
-        <div className="bd">
-          <div className="row" style={{gap:8}}>
-            <AsyncFGSelect
-              value={nbFg}
-              onChange={(id)=>setNbFg(id)}
-              placeholder="Search finished goods…"
-              minChars={1}
-              pageSize={25}
-            />
-            <input type="number" min="1" value={nbQty} onChange={e=>setNbQty(e.target.value)} style={{width:120}} />
-            <input placeholder="Note (optional)" value={nbNote} onChange={e=>setNbNote(e.target.value)} />
-            <button className="btn" onClick={addNoBarcode}>Add Return</button>
+        <div className="hd">
+          <b>Recent Returns</b>
+          <div className="row">
+            <input placeholder="Search packet / item / note…" value={q} onChange={e=>setQ(e.target.value)} style={{minWidth:280}}/>
+            <button className="btn outline" onClick={loadRows} disabled={loadingRows}>{loadingRows ? 'Refreshing…' : 'Refresh'}</button>
           </div>
-          <div className="s" style={{marginTop:6}}>Creates new barcodes; find them in <b>Live Barcodes</b> to print labels.</div>
         </div>
-      </div>
-
-      {/* SCRAP (by barcode only) */}
-      <div className="card">
-        <div className="hd"><b>Scrap by Barcode</b></div>
-        <div className="bd">
-          <div className="row" style={{gap:8}}>
-            <input placeholder="Scrap by Barcode" value={scrapCode} onChange={e=>setScrapCode(e.target.value)} style={{minWidth:280}} />
-            <input placeholder="Note (optional)" value={scrapNote} onChange={e=>setScrapNote(e.target.value)} />
-            <button className="btn outline" onClick={scrapByBarcode}>Scrap</button>
-          </div>
+        <div className="bd" style={{overflow:'auto'}}>
+          <table className="table">
+            <thead>
+              <tr><th>ID</th><th>When</th><th>Reason</th><th>Packet</th><th>Item</th><th>Note</th></tr>
+            </thead>
+            <tbody>
+              {visible.map(r=>(
+                <tr key={r.id}>
+                  <td>{r.id}</td>
+                  <td>{fmt(r.created_at)}</td>
+                  <td><span className="badge">{r.reason}</span></td>
+                  <td style={{fontFamily:'monospace'}}>{r.packet_code || '—'}</td>
+                  <td>{r.finished_good_name || '—'}</td>
+                  <td>{r.note || '—'}</td>
+                </tr>
+              ))}
+              {visible.length===0 && (
+                <tr><td colSpan="6" style={{color:'var(--muted)'}}>No returns</td></tr>
+              )}
+            </tbody>
+          </table>
         </div>
       </div>
     </div>
-  )
+  );
 }

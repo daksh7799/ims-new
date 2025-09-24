@@ -1,16 +1,8 @@
+// src/components/AsyncFGSelect.jsx
 import { useEffect, useRef, useState } from "react";
 import { supabase } from "../supabaseClient";
 import useDebouncedValue from "../hooks/useDebouncedValue";
 
-/**
- * Props:
- *  value: string | number (finished_goods.id)
- *  onChange: (id, item) => void
- *  placeholder?: string
- *  minChars?: number (default 1)
- *  pageSize?: number (default 25)
- *  disabled?: boolean
- */
 export default function AsyncFGSelect({
   value,
   onChange,
@@ -21,20 +13,19 @@ export default function AsyncFGSelect({
 }) {
   const [input, setInput] = useState("");
   const q = useDebouncedValue(input, 250);
-  const [items, setItems] = useState([]);  // {id,name,unit,barcode_prefix}
+  const [items, setItems] = useState([]);  // {id,name,code_prefix}
   const [loading, setLoading] = useState(false);
   const [open, setOpen] = useState(false);
   const [page, setPage] = useState(1);
   const listRef = useRef(null);
-  const [selected, setSelected] = useState(null); // cache selected {id,name,...}
+  const [selected, setSelected] = useState(null);
 
   useEffect(() => {
-    // When value is externally set (e.g., after submit), fetch its name once
     async function fetchSelectedOnce() {
       if (!value) { setSelected(null); return; }
       const { data, error } = await supabase
         .from("finished_goods")
-        .select("id,name,unit,barcode_prefix")
+        .select("id,name,code_prefix")
         .eq("id", value)
         .limit(1);
       if (!error && data && data[0]) setSelected(data[0]);
@@ -43,33 +34,27 @@ export default function AsyncFGSelect({
   }, [value]);
 
   async function search(pageArg = 1, append = false) {
-    if (q.length < minChars) {
-      setItems([]);
-      setPage(1);
-      return;
-    }
+    if (q.length < minChars) { setItems([]); setPage(1); return; }
     setLoading(true);
     const from = (pageArg - 1) * pageSize;
     const to = from + pageSize - 1;
 
-    let qry = supabase
+    const { data, error } = await supabase
       .from("finished_goods")
-      .select("id,name,unit,barcode_prefix")
-      .order("name", { ascending: true })
+      .select("id,name,code_prefix")
+      .eq("is_active", true)
       .ilike("name", `%${q}%`)
+      .order("name", { ascending: true })
       .range(from, to);
 
-    const { data, error } = await qry;
     setLoading(false);
-    if (error) { console.error(error); return; }
-
+    if (error) return console.error(error);
     setItems((prev) => (append ? [...prev, ...(data || [])] : (data || [])));
     setPage(pageArg);
     setOpen(true);
   }
 
   useEffect(() => {
-    // new query string -> reset to page 1
     if (q.length >= minChars) search(1, false);
     else { setItems([]); setOpen(false); }
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -78,14 +63,13 @@ export default function AsyncFGSelect({
   function pick(it) {
     setSelected(it);
     setOpen(false);
-    setInput(""); // clear search box after selection
+    setInput("");
     onChange?.(it.id, it);
   }
 
   function onKey(e) {
     if (!open || !items.length) return;
-    const el = listRef.current;
-    if (!el) return;
+    const el = listRef.current; if (!el) return;
     const current = el.querySelector(".active");
     if (e.key === "ArrowDown") {
       e.preventDefault();
@@ -111,17 +95,14 @@ export default function AsyncFGSelect({
     }
   }
 
-  async function loadMore() {
-    await search(page + 1, true);
-  }
+  async function loadMore() { await search(page + 1, true); }
 
   return (
     <div style={{ position: "relative", minWidth: 320 }}>
-      {/* Selected pill */}
       {selected ? (
         <div className="row" style={{ marginBottom: 6, gap: 6, flexWrap: "wrap" }}>
           <span className="badge">
-            {selected.name} {selected.unit ? `(${selected.unit})` : ""}
+            {selected.name}{selected.code_prefix ? ` • Prefix: ${selected.code_prefix}` : ""}
           </span>
           <button className="btn ghost small" onClick={() => { setSelected(null); onChange?.("", null); }}>
             Clear
@@ -129,7 +110,6 @@ export default function AsyncFGSelect({
         </div>
       ) : null}
 
-      {/* Search input */}
       <input
         placeholder={placeholder}
         value={input}
@@ -139,21 +119,12 @@ export default function AsyncFGSelect({
         disabled={disabled}
       />
 
-      {/* Dropdown */}
       {open && (
         <div
           style={{
-            position: "absolute",
-            zIndex: 50,
-            left: 0,
-            right: 0,
-            top: "calc(100% + 6px)",
-            background: "var(--surface)",
-            border: "1px solid var(--border)",
-            borderRadius: 10,
-            maxHeight: 260,
-            overflow: "auto",
-            boxShadow: "var(--shadow-1)",
+            position: "absolute", zIndex: 50, left: 0, right: 0, top: "calc(100% + 6px)",
+            background: "var(--surface)", border: "1px solid var(--border)", borderRadius: 10,
+            maxHeight: 260, overflow: "auto", boxShadow: "var(--shadow-1)",
           }}
         >
           <ul ref={listRef} style={{ listStyle: "none", margin: 0, padding: 6 }}>
@@ -170,13 +141,8 @@ export default function AsyncFGSelect({
                 key={it.id}
                 data-id={String(it.id)}
                 onMouseDown={() => pick(it)}
-                style={{
-                  padding: "8px 10px",
-                  borderRadius: 8,
-                  cursor: "pointer",
-                }}
+                style={{ padding: "8px 10px", borderRadius: 8, cursor: "pointer" }}
                 onMouseEnter={(e) => {
-                  // hover highlight
                   listRef.current?.querySelectorAll("li").forEach(li => li.classList.remove("active"));
                   e.currentTarget.classList.add("active");
                 }}
@@ -184,17 +150,13 @@ export default function AsyncFGSelect({
                 <div style={{ display: "flex", justifyContent: "space-between", gap: 10 }}>
                   <div>
                     <div style={{ fontWeight: 600 }}>{it.name}</div>
-                    <div className="s">
-                      {it.unit ? `Unit: ${it.unit}` : ""}{it.unit && it.barcode_prefix ? " • " : ""}
-                      {it.barcode_prefix ? `Prefix: ${it.barcode_prefix}` : ""}
-                    </div>
+                    <div className="s">{it.code_prefix ? `Prefix: ${it.code_prefix}` : ""}</div>
                   </div>
                 </div>
               </li>
             ))}
           </ul>
 
-          {/* Load more */}
           {items.length > 0 && (
             <div style={{ display: "flex", justifyContent: "center", borderTop: "1px dashed var(--border)" }}>
               <button className="btn ghost small" onMouseDown={(e)=>e.preventDefault()} onClick={loadMore} disabled={loading}>

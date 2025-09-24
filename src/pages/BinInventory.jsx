@@ -1,4 +1,3 @@
-// src/pages/BinInventory.jsx
 import { useEffect, useMemo, useState } from 'react'
 import { supabase } from '../supabaseClient'
 import { downloadCSV } from '../utils/csv'
@@ -16,35 +15,49 @@ export default function BinInventory(){
   const [q, setQ] = useState('')
   const [binFilter, setBinFilter] = useState('')
   const [loading, setLoading] = useState(true)
+  const [errorMsg, setErrorMsg] = useState('')
 
   async function load(){
     setLoading(true)
-    const [{ data:inv, error:e1 }, { data:binRows, error:e2 }] = await Promise.all([
-      supabase
-        .from('v_bin_inventory')
-        .select('bin_code, packet_code, finished_good_name, status, produced_at, added_at')
-        .order('bin_code', { ascending: true })
-        .order('id', { ascending: false }),
-      supabase
-        .from('v_bin_counts')
-        .select('bin_code, packets')
-        .order('bin_code', { ascending: true })
-    ])
-    if(e1){ alert(e1.message); setRows([]) } else { setRows(inv || []) }
-    if(e2){ console.warn(e2) }
-    setBins((binRows || []).map(b => ({ code: b.bin_code, count: b.packets })))
-    setLoading(false)
+    try{
+      const [{ data:inv, error:e1 }, { data:binRows, error:e2 }] = await Promise.all([
+        supabase
+          .from('v_bin_inventory')
+          .select('bin_code, packet_code, finished_good_name, status, produced_at, added_at')
+          .order('bin_code', { ascending: true })
+          .order('added_at', { ascending: false }),
+        supabase
+          .from('v_bin_counts')
+          .select('bin_code, packets')
+          .order('bin_code', { ascending: true })
+      ])
+      if(e1) throw e1
+      if(e2) console.warn(e2)
+      setRows(inv || [])
+      setBins((binRows || []).map(b => ({ code: b.bin_code, count: b.packets })))
+      setErrorMsg('')
+    }catch(e){
+      console.error(e)
+      setErrorMsg(e.message || String(e))
+      setRows([])
+      setBins([])
+    }finally{
+      setLoading(false)
+    }
   }
 
   useEffect(()=>{ load() }, [])
 
-  // Realtime refresh when packets change
   useEffect(()=>{
-    const ch = supabase
-      .channel('realtime:bininv')
+    const ch1 = supabase
+      .channel('realtime:putaway')
+      .on('postgres_changes', { event:'*', schema:'public', table:'packet_putaway' }, () => load())
+    const ch2 = supabase
+      .channel('realtime:packets')
       .on('postgres_changes', { event:'*', schema:'public', table:'packets' }, () => load())
-      .subscribe()
-    return () => supabase.removeChannel(ch)
+    ch1.subscribe()
+    ch2.subscribe()
+    return () => { try{ supabase.removeChannel(ch1) }catch{}; try{ supabase.removeChannel(ch2) }catch{} }
   }, [])
 
   const filtered = useMemo(()=>{
@@ -96,6 +109,7 @@ export default function BinInventory(){
         </div>
 
         <div className="bd" style={{ overflow:'auto' }}>
+          {!!errorMsg && <div className="badge err" style={{marginBottom:8}}>{errorMsg}</div>}
           <table className="table">
             <thead>
               <tr>

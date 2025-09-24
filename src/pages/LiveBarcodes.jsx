@@ -12,34 +12,31 @@ function fmtDate(d) {
 }
 
 export default function LiveBarcodes() {
-  const [rows, setRows] = useState([]);        // data from view
-  const [q, setQ] = useState("");              // search
+  const [rows, setRows] = useState([]); // data from view
+  const [q, setQ] = useState("");
   const [onlyNoBarcode, setOnlyNoBarcode] = useState(false);
   const [loading, setLoading] = useState(true);
+  const [err, setErr] = useState("");
 
-  // selection set of packet_codes (only acts on filtered/visible rows when using header checkbox)
+  // selection state: Set(packet_code)
   const [selected, setSelected] = useState(() => new Set());
   const navigate = useNavigate();
 
   async function load() {
     setLoading(true);
+    setErr("");
     const { data, error } = await supabase
       .from("v_live_barcodes_enriched")
       .select(
-        "id, packet_code, finished_good_name, bin_code, status, is_no_barcode_return, returned_at, created_at, produced_at"
+        "id, packet_code, finished_good_name, bin_code, status, returned_at, produced_at, is_no_barcode_return"
       )
       .order("id", { ascending: false });
-
     if (error) {
-      alert(error.message);
+      console.error(error);
+      setErr(error.message || String(error));
       setRows([]);
     } else {
-      // normalize created display (createdAt) with produced_at fallback (Option B)
-      const norm = (data || []).map((r) => ({
-        ...r,
-        createdAt: r.created_at || r.produced_at || null,
-      }));
-      setRows(norm);
+      setRows(data || []);
     }
     setLoading(false);
     setSelected(new Set()); // clear selection on refresh
@@ -47,38 +44,43 @@ export default function LiveBarcodes() {
 
   useEffect(() => {
     load();
-    // realtime refresh when packets mutate
-    const ch = supabase
-      .channel("realtime:pkts")
-      .on(
-        "postgres_changes",
-        { event: "*", schema: "public", table: "packets" },
-        () => load()
-      )
-      .subscribe();
-    return () => supabase.removeChannel(ch);
+    // Realtime on all moving parts that affect the view
+    const ch1 = supabase
+      .channel("rt:packets")
+      .on("postgres_changes", { event: "*", schema: "public", table: "packets" }, load);
+    const ch2 = supabase
+      .channel("rt:putaway")
+      .on("postgres_changes", { event: "*", schema: "public", table: "packet_putaway" }, load);
+    const ch3 = supabase
+      .channel("rt:ledger")
+      .on("postgres_changes", { event: "*", schema: "public", table: "stock_ledger" }, load);
+    ch1.subscribe();
+    ch2.subscribe();
+    ch3.subscribe();
+    return () => {
+      try { supabase.removeChannel(ch1); } catch {}
+      try { supabase.removeChannel(ch2); } catch {}
+      try { supabase.removeChannel(ch3); } catch {}
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
-  // filtering
   const filtered = useMemo(() => {
     const qq = q.trim().toLowerCase();
-    let arr = rows || [];
-    if (qq) {
-      arr = arr.filter(
-        (r) =>
-          r.packet_code.toLowerCase().includes(qq) ||
-          (r.finished_good_name || "").toLowerCase().includes(qq) ||
-          (r.bin_code || "").toLowerCase().includes(qq)
+    return (rows || []).filter((r) => {
+      if (onlyNoBarcode && !r.is_no_barcode_return) return false;
+      return (
+        !qq ||
+        r.packet_code?.toLowerCase().includes(qq) ||
+        (r.finished_good_name || "").toLowerCase().includes(qq) ||
+        (r.bin_code || "").toLowerCase().includes(qq)
       );
-    }
-    if (onlyNoBarcode) arr = arr.filter((r) => !!r.is_no_barcode_return);
-    return arr;
+    });
   }, [rows, q, onlyNoBarcode]);
 
-  // header checkbox state (acts only on currently filtered rows)
+  // header checkbox: reflect only current visible rows
   const allVisibleSelected =
-    filtered.length > 0 &&
-    filtered.every((r) => selected.has(r.packet_code));
+    filtered.length > 0 && filtered.every((r) => selected.has(r.packet_code));
   const someVisibleSelected =
     filtered.some((r) => selected.has(r.packet_code)) && !allVisibleSelected;
 
@@ -109,9 +111,9 @@ export default function LiveBarcodes() {
       item: r.finished_good_name,
       bin: r.bin_code || "-",
       status: r.status,
-      source: r.is_no_barcode_return ? "No-Barcode Return" : "",
-      returned_at: r.returned_at ? new Date(r.returned_at).toISOString() : "",
-      created_at: r.createdAt ? new Date(r.createdAt).toISOString() : "",
+      no_barcode_return: r.is_no_barcode_return ? "Yes" : "No",
+      returned_at: r.returned_at || "",
+      produced_at: r.produced_at || "",
     }));
     downloadCSV("live_barcodes.csv", data);
   }
@@ -170,17 +172,15 @@ export default function LiveBarcodes() {
         </div>
 
         <div className="bd" style={{ overflow: "auto" }}>
+          {!!err && <div className="badge err" style={{ marginBottom: 8 }}>{err}</div>}
           <table className="table">
             <thead>
               <tr>
                 <th style={{ width: 36 }}>
-                  {/* header checkbox toggles ONLY visible rows */}
                   <input
                     type="checkbox"
                     checked={allVisibleSelected}
-                    ref={(el) => {
-                      if (el) el.indeterminate = someVisibleSelected;
-                    }}
+                    ref={(el) => { if (el) el.indeterminate = someVisibleSelected; }}
                     onChange={(e) => toggleVisible(e.target.checked)}
                   />
                 </th>
@@ -188,9 +188,9 @@ export default function LiveBarcodes() {
                 <th>Item</th>
                 <th>Bin</th>
                 <th>Status</th>
-                <th>Source</th>
+                <th>No-Barcode Return</th>
                 <th>Returned At</th>
-                <th>Created</th>
+                <th>Produced At</th>
               </tr>
             </thead>
             <tbody>
@@ -207,17 +207,9 @@ export default function LiveBarcodes() {
                   <td>{r.finished_good_name}</td>
                   <td>{r.bin_code || "—"}</td>
                   <td><span className="badge">{r.status}</span></td>
-                  <td>
-                    {r.is_no_barcode_return ? (
-                      <span className="badge" title="Created from Good Packet but Barcode Missing">
-                        No-Barcode Return
-                      </span>
-                    ) : (
-                      <span className="s" style={{ color: "var(--muted)" }}>—</span>
-                    )}
-                  </td>
+                  <td>{r.is_no_barcode_return ? "Yes" : "—"}</td>
                   <td>{fmtDate(r.returned_at)}</td>
-                  <td>{fmtDate(r.createdAt)}</td>
+                  <td>{fmtDate(r.produced_at)}</td>
                 </tr>
               ))}
               {filtered.length === 0 && (
