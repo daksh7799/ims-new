@@ -9,20 +9,29 @@ export default function FGInventory() {
   const [minQty, setMinQty] = useState("");
   const [maxQty, setMaxQty] = useState("");
 
+<<<<<<< HEAD
   // === Load Data
+=======
+>>>>>>> 3d382cf (Updated LiveBarcodes, archive cron jobs, and UI improvements)
   async function load() {
     setLoading(true);
     const { data, error } = await supabase
       .from("v_fg_inventory")
       .select("*")
       .order("finished_good_name");
+<<<<<<< HEAD
 
+=======
+>>>>>>> 3d382cf (Updated LiveBarcodes, archive cron jobs, and UI improvements)
     if (error) {
       alert(error.message);
       setLoading(false);
       return;
     }
+<<<<<<< HEAD
 
+=======
+>>>>>>> 3d382cf (Updated LiveBarcodes, archive cron jobs, and UI improvements)
     setRows(data || []);
     setLoading(false);
   }
@@ -31,7 +40,10 @@ export default function FGInventory() {
     load();
   }, []);
 
+<<<<<<< HEAD
   // === Filter Logic
+=======
+>>>>>>> 3d382cf (Updated LiveBarcodes, archive cron jobs, and UI improvements)
   const filtered = useMemo(() => {
     const qq = q.trim().toLowerCase();
     const min = minQty === "" ? -Infinity : Number(minQty);
@@ -39,33 +51,48 @@ export default function FGInventory() {
     return (rows || []).filter((r) => {
       const matchQ =
         !qq ||
+<<<<<<< HEAD
         String(r.finished_good_name || "").toLowerCase().includes(qq) ||
         String(r.unit || "").toLowerCase().includes(qq);
+=======
+        String(r.finished_good_name || "").toLowerCase().includes(qq);
+>>>>>>> 3d382cf (Updated LiveBarcodes, archive cron jobs, and UI improvements)
       const qty = Number(r.qty_on_hand || 0);
       return matchQ && qty >= min && qty <= max;
     });
   }, [rows, q, minQty, maxQty]);
 
+<<<<<<< HEAD
   // === Low stock count
   const lowCount = filtered.filter(
     (r) => r.low_threshold && Number(r.qty_on_hand) <= Number(r.low_threshold)
   ).length;
 
   // === Export CSV
+=======
+>>>>>>> 3d382cf (Updated LiveBarcodes, archive cron jobs, and UI improvements)
   function exportCSV() {
     downloadCSV(
       "fg_inventory.csv",
       filtered.map((r) => ({
         id: r.finished_good_id,
+<<<<<<< HEAD
         name: r.finished_good_name,
         qty_on_hand: r.qty_on_hand,
         unit: r.unit || "",
         low_threshold: r.low_threshold || "",
+=======
+        finished_good_name: r.finished_good_name,
+        qty_on_hand: r.qty_on_hand,
+>>>>>>> 3d382cf (Updated LiveBarcodes, archive cron jobs, and UI improvements)
       }))
     );
   }
 
+<<<<<<< HEAD
   // === UI
+=======
+>>>>>>> 3d382cf (Updated LiveBarcodes, archive cron jobs, and UI improvements)
   return (
     <div className="grid">
       <div className="card">
@@ -74,10 +101,16 @@ export default function FGInventory() {
         </div>
 
         <div className="bd">
+<<<<<<< HEAD
           {/* 🔍 Filters */}
           <div className="row" style={{ marginBottom: 10, flexWrap: "wrap" }}>
             <input
               placeholder="Search FG name / unit…"
+=======
+          <div className="row" style={{ marginBottom: 10 }}>
+            <input
+              placeholder="Search item name…"
+>>>>>>> 3d382cf (Updated LiveBarcodes, archive cron jobs, and UI improvements)
               value={q}
               onChange={(e) => setQ(e.target.value)}
             />
@@ -111,6 +144,7 @@ export default function FGInventory() {
             </button>
           </div>
 
+<<<<<<< HEAD
           {/* Counts */}
           <div className="row" style={{ marginBottom: 8 }}>
             <span className="badge">Items: {filtered.length}</span>
@@ -118,11 +152,14 @@ export default function FGInventory() {
           </div>
 
           {/* 📦 Table */}
+=======
+>>>>>>> 3d382cf (Updated LiveBarcodes, archive cron jobs, and UI improvements)
           <table className="table">
             <thead>
               <tr>
                 <th>Finished Good</th>
                 <th style={{ textAlign: "right" }}>On Hand</th>
+<<<<<<< HEAD
                 <th style={{ textAlign: "right" }}>Threshold</th>
                 <th>Unit</th>
                 <th>Status</th>
@@ -163,6 +200,22 @@ export default function FGInventory() {
               {filtered.length === 0 && (
                 <tr>
                   <td colSpan={5} style={{ color: "var(--muted)" }}>
+=======
+              </tr>
+            </thead>
+            <tbody>
+              {filtered.map((r) => (
+                <tr key={r.finished_good_id}>
+                  <td>{r.finished_good_name}</td>
+                  <td style={{ textAlign: "right", fontWeight: 700 }}>
+                    {r.qty_on_hand}
+                  </td>
+                </tr>
+              ))}
+              {filtered.length === 0 && (
+                <tr>
+                  <td colSpan={2} style={{ color: "var(--muted)" }}>
+>>>>>>> 3d382cf (Updated LiveBarcodes, archive cron jobs, and UI improvements)
                     No items found
                   </td>
                 </tr>

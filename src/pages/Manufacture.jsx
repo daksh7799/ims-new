@@ -1,6 +1,6 @@
-// src/pages/ManufacturePage.jsx
 import { useEffect, useState } from 'react'
 import * as XLSX from 'xlsx'
+import { saveAs } from 'file-saver'
 import { supabase } from '../supabaseClient'
 import { useNavigate } from 'react-router-dom'
 import AsyncFGSelect from '../components/AsyncFGSelect.jsx'
@@ -36,8 +36,8 @@ export default function ManufacturePage(){
     setLastBatch(null)
     try{
       const { data, error } = await supabase.rpc('create_manufacture_batch_v3', {
-        p_finished_good_id: fgId,      // UUID string
-        p_qty_units: n                 // integer
+        p_finished_good_id: fgId,
+        p_qty_units: n
       })
       if(error) throw error
 
@@ -70,14 +70,22 @@ export default function ManufacturePage(){
     const namesByCode = Object.fromEntries(singleCreated.map(x=>[x.code, x.name]))
     navigate('/labels', { state: { title: fgName || 'Labels', codes, namesByCode } })
   }
+
+  function printLabelsSingle(){
+    if(!singleCreated.length) return
+    const codes = singleCreated.map(x=>x.code)
+    const namesByCode = Object.fromEntries(singleCreated.map(x=>[x.code, x.name]))
+    navigate('/labels', { state: { title: fgName || 'Labels', codes, namesByCode, autoPrint: true } })
+  }
+
   function clearLastSingle(){
     setSingleCreated([]); setLastBatch(null)
     try{ localStorage.removeItem(LS_SINGLE) }catch{}
   }
 
   // ===== Bulk =====
-  const [fgList,setFgList]=useState([])   // [{id,name}]
-  const [rows,setRows]=useState([])       // [{name, qty}]
+  const [fgList,setFgList]=useState([])
+  const [rows,setRows]=useState([])
   const [bulkLoading,setBulkLoading]=useState(false)
   const [bulkCreated,setBulkCreated]=useState([])
 
@@ -104,7 +112,6 @@ export default function ManufacturePage(){
       const wb = XLSX.read(ev.target.result, { type:'binary' })
       const ws = wb.Sheets[wb.SheetNames[0]]
       const json = XLSX.utils.sheet_to_json(ws, { defval:'' })
-      // FG + QTY only
       const normalized = json.map(r=>{
         const name = String(
           r.finished_good ?? r.FINISHED_GOOD ?? r['finished good'] ?? ''
@@ -123,7 +130,6 @@ export default function ManufacturePage(){
     const all=[]
 
     try{
-      // name → id index (UUID strings)
       const idx = {}
       fgList.forEach(f => { idx[f.name.trim().toLowerCase()] = f.id })
 
@@ -132,8 +138,8 @@ export default function ManufacturePage(){
         if(!fgUUID){ alert(`FG not found: ${r.name}`); continue }
 
         const { data, error } = await supabase.rpc('create_manufacture_batch_v3', {
-          p_finished_good_id: fgUUID,                          // UUID
-          p_qty_units: Math.max(1, Math.floor(Number(r.qty)))  // integer
+          p_finished_good_id: fgUUID,
+          p_qty_units: Math.max(1, Math.floor(Number(r.qty)))
         })
         if(error){ alert(`Error for ${r.name}: ${error.message}`); continue }
 
@@ -164,6 +170,22 @@ export default function ManufacturePage(){
     const namesByCode = Object.fromEntries(bulkCreated.map(x=>[x.code, x.name]))
     navigate('/labels', { state: { title: 'Bulk Labels', codes, namesByCode } })
   }
+
+  function printLabelsBulk(){
+    if(!bulkCreated.length) return
+    const codes = bulkCreated.map(x=>x.code)
+    const namesByCode = Object.fromEntries(bulkCreated.map(x=>[x.code, x.name]))
+    navigate('/labels', { state: { title: 'Bulk Labels', codes, namesByCode, autoPrint: true } })
+  }
+
+  // ✅ Download blank CSV template
+  function downloadTemplateCSV() {
+    const headers = ['finished_good', 'qty']
+    const csvContent = headers.join(',') + '\n'
+    const blob = new Blob([csvContent], { type: 'text/csv;charset=utf-8;' })
+    saveAs(blob, 'bulk_template.csv')
+  }
+
   function clearLastBulk(){
     setBulkCreated([])
     try{ localStorage.removeItem(LS_BULK) }catch{}
@@ -192,19 +214,15 @@ export default function ManufacturePage(){
                   minChars={1}
                   pageSize={25}
                 />
-                <input
-                  type="number"
-                  min="1"
-                  value={qty}
-                  onChange={e=>setQty(e.target.value)}
-                  style={{width:140}}
-                  placeholder="Qty (units)"
-                />
+                <input type="number" min="1" value={qty} onChange={e=>setQty(e.target.value)} style={{width:140}} placeholder="Qty (units)" />
                 <button className="btn" onClick={manufactureOnce} disabled={making || !fgId || Number(qty)<=0}>
                   {making ? 'Manufacturing…' : 'Create Packets'}
                 </button>
                 <button className="btn outline" onClick={openLabelsSingle} disabled={!singleCreated.length}>
                   Open Labels (2-up PDF)
+                </button>
+                <button className="btn" onClick={printLabelsSingle} disabled={!singleCreated.length}>
+                  🖨️ Print Labels (2-up)
                 </button>
                 <button className="btn ghost" onClick={clearLastSingle} disabled={!singleCreated.length}>
                   Clear Last
@@ -252,13 +270,20 @@ export default function ManufacturePage(){
                 <button className="btn outline" onClick={openLabelsBulk} disabled={!bulkCreated.length}>
                   Open Labels (2-up PDF)
                 </button>
+                <button className="btn" onClick={printLabelsBulk} disabled={!bulkCreated.length}>
+                  🖨️ Print Labels (2-up)
+                </button>
                 <button className="btn ghost" onClick={clearLastBulk} disabled={!bulkCreated.length}>
                   Clear Last
+                </button>
+                <button className="btn ghost" onClick={downloadTemplateCSV}>
+                  📄 Download Blank CSV Template
                 </button>
               </div>
 
               <div className="s" style={{color:'var(--muted)', marginTop:6}}>
-                Columns required: <code>finished_good</code>, <code>qty</code>. Names must match your FG master.
+                Columns required: <code>finished_good</code>, <code>qty</code>.  
+                Upload this same format for your grocery manufacturing batches.
               </div>
 
               <div className="card" style={{marginTop:10}}>

@@ -5,6 +5,7 @@ import * as XLSX from 'xlsx'
 import { supabase } from '../supabaseClient'
 import { downloadCSV } from '../utils/csv'
 import AsyncFGSelect from '../components/AsyncFGSelect.jsx'
+import { saveAs } from 'file-saver'
 
 function normalizeName(s){ return String(s||'').trim().toLowerCase() }
 
@@ -67,8 +68,6 @@ export default function SalesOrders(){
 
   const [q,setQ]=useState('')
   const [loading,setLoading]=useState(true)
-
-  // Hide shipped toggle
   const [hideShipped, setHideShipped] = useState(true)
 
   async function load(){
@@ -154,7 +153,14 @@ export default function SalesOrders(){
     finally{ setImporting(false); e.target.value='' }
   }
 
-  // FILTER: hide shipped (toggle) + search
+  // ✅ Download Sample CSV
+  function downloadSampleCSV() {
+    const headers = ['Finished Good', 'Qty']
+    const csvContent = headers.join(',') + '\n'
+    const blob = new Blob([csvContent], { type: 'text/csv;charset=utf-8;' })
+    saveAs(blob, 'sales_order_sample.csv')
+  }
+
   const filtered = useMemo(()=>{
     const s=q.trim().toLowerCase()
     return (orders||[]).filter(o =>
@@ -174,7 +180,6 @@ export default function SalesOrders(){
     })))
   }
 
-  // ---- Print one SO ----
   async function printSO(order){
     try{
       const [{ default: jsPDF }, { default: autoTable }] = await Promise.all([
@@ -190,7 +195,6 @@ export default function SalesOrders(){
         doc.text(`Created: ${new Date(order.created_at).toLocaleString()}`, 14, 31)
       }
 
-      // Fetch lines + bins
       const { data: lines } = await supabase.from('v_so_lines').select('*').eq('sales_order_id', order.id)
       const fgNames = (lines||[]).map(l=>l.finished_good_name).filter(Boolean)
       const binsByFg = await getBinsForFgNames(fgNames)
@@ -228,15 +232,23 @@ export default function SalesOrders(){
       <div className="card">
         <div className="hd"><b>Import ONE Sales Order</b></div>
         <div className="bd">
-          <div className="row" style={{gap:8}}>
+          <div className="row" style={{gap:8, flexWrap:'wrap'}}>
             <select value={impCustomer} onChange={e=>setImpCustomer(e.target.value)}>
               <option value="">Select Customer</option>
               {customers.map(c=><option key={c.id} value={c.name}>{c.name}</option>)}
             </select>
-            <input placeholder="SO Number (optional)" value={impSoNumber} onChange={e=>setImpSoNumber(e.target.value)} />
+            <input
+              placeholder="SO Number (auto-generated)"
+              value={impSoNumber}
+              readOnly
+              style={{ background: '#f8f8f8', color: '#777', cursor: 'not-allowed' }}
+            />
             <input type="file" accept=".xlsx,.xls,.csv" onChange={onImportOneSO} disabled={importing}/>
+            <button className="btn ghost" onClick={downloadSampleCSV}>📄 Download Sample CSV</button>
           </div>
-          <div className="s" style={{color:'var(--muted)'}}>Columns: <code>Finished Good</code>, <code>Qty</code>.</div>
+          <div className="s" style={{color:'var(--muted)'}}>
+            Columns required: <code>Finished Good</code>, <code>Qty</code>.
+          </div>
         </div>
       </div>
 
@@ -249,7 +261,12 @@ export default function SalesOrders(){
               <option value="">Select Customer</option>
               {customers.map(c=><option key={c.id} value={c.name}>{c.name}</option>)}
             </select>
-            <input placeholder="SO Number (optional)" value={soNumber} onChange={e=>setSoNumber(e.target.value)} />
+            <input
+              placeholder="SO Number (auto-generated)"
+              value={soNumber}
+              readOnly
+              style={{ background: '#f8f8f8', color: '#777', cursor: 'not-allowed' }}
+            />
           </div>
 
           <table className="table">
@@ -286,7 +303,6 @@ export default function SalesOrders(){
           <b>Orders</b>
           <div className="row">
             <input placeholder="Search SO / Customer…" value={q} onChange={e=>setQ(e.target.value)} />
-            {/* Hide shipped toggle */}
             <label className="row" style={{gap:6, marginLeft:8}}>
               <input
                 type="checkbox"

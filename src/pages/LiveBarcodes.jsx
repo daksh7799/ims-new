@@ -1,4 +1,3 @@
-// src/pages/LiveBarcodes.jsx
 import { useEffect, useMemo, useState } from "react";
 import { supabase } from "../supabaseClient";
 import { downloadCSV } from "../utils/csv";
@@ -17,11 +16,10 @@ export default function LiveBarcodes() {
   const [onlyNoBarcode, setOnlyNoBarcode] = useState(false);
   const [loading, setLoading] = useState(true);
   const [err, setErr] = useState("");
-
-  // selection state: Set(packet_code)
   const [selected, setSelected] = useState(() => new Set());
   const navigate = useNavigate();
 
+  /** -------------------- LOAD BAR CODES -------------------- **/
   async function load() {
     setLoading(true);
     setErr("");
@@ -30,6 +28,7 @@ export default function LiveBarcodes() {
       .select(
         "id, packet_code, finished_good_name, bin_code, status, returned_at, produced_at, is_no_barcode_return"
       )
+      .eq("status", "live") // ✅ fetch only live barcodes
       .order("id", { ascending: false });
     if (error) {
       console.error(error);
@@ -39,12 +38,17 @@ export default function LiveBarcodes() {
       setRows(data || []);
     }
     setLoading(false);
-    setSelected(new Set()); // clear selection on refresh
+    setSelected(new Set());
   }
 
+  /** -------------------- AUTO + REALTIME REFRESH -------------------- **/
   useEffect(() => {
     load();
-    // Realtime on all moving parts that affect the view
+
+    // refresh every 30 s (lightweight, won't lag)
+    const timer = setInterval(load, 30_000);
+
+    // realtime triggers on DB changes
     const ch1 = supabase
       .channel("rt:packets")
       .on("postgres_changes", { event: "*", schema: "public", table: "packets" }, load);
@@ -54,10 +58,13 @@ export default function LiveBarcodes() {
     const ch3 = supabase
       .channel("rt:ledger")
       .on("postgres_changes", { event: "*", schema: "public", table: "stock_ledger" }, load);
+
     ch1.subscribe();
     ch2.subscribe();
     ch3.subscribe();
+
     return () => {
+      clearInterval(timer);
       try { supabase.removeChannel(ch1); } catch {}
       try { supabase.removeChannel(ch2); } catch {}
       try { supabase.removeChannel(ch3); } catch {}
@@ -65,6 +72,7 @@ export default function LiveBarcodes() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
+  /** -------------------- FILTER -------------------- **/
   const filtered = useMemo(() => {
     const qq = q.trim().toLowerCase();
     return (rows || []).filter((r) => {
@@ -78,7 +86,7 @@ export default function LiveBarcodes() {
     });
   }, [rows, q, onlyNoBarcode]);
 
-  // header checkbox: reflect only current visible rows
+  /** -------------------- SELECTION -------------------- **/
   const allVisibleSelected =
     filtered.length > 0 && filtered.every((r) => selected.has(r.packet_code));
   const someVisibleSelected =
@@ -96,15 +104,13 @@ export default function LiveBarcodes() {
   function toggleVisible(checked) {
     setSelected((prev) => {
       const next = new Set(prev);
-      if (checked) {
-        filtered.forEach((r) => next.add(r.packet_code));
-      } else {
-        filtered.forEach((r) => next.delete(r.packet_code));
-      }
+      if (checked) filtered.forEach((r) => next.add(r.packet_code));
+      else filtered.forEach((r) => next.delete(r.packet_code));
       return next;
     });
   }
 
+  /** -------------------- EXPORTS -------------------- **/
   function exportRows() {
     const data = filtered.map((r) => ({
       barcode: r.packet_code,
@@ -118,6 +124,7 @@ export default function LiveBarcodes() {
     downloadCSV("live_barcodes.csv", data);
   }
 
+  /** -------------------- LABEL DOWNLOAD -------------------- **/
   function downloadSelected() {
     const chosen = filtered.filter((r) => selected.has(r.packet_code));
     if (!chosen.length) {
@@ -134,10 +141,34 @@ export default function LiveBarcodes() {
           chosen.length === 1 ? chosen[0].finished_good_name : "Selected Labels",
         codes,
         namesByCode,
+        mode: "download"
       },
     });
   }
 
+  /** -------------------- DIRECT PRINT -------------------- **/
+  function printSelected() {
+    const chosen = filtered.filter((r) => selected.has(r.packet_code));
+    if (!chosen.length) {
+      alert("Select at least one barcode.");
+      return;
+    }
+    const codes = chosen.map((r) => r.packet_code);
+    const namesByCode = Object.fromEntries(
+      chosen.map((r) => [r.packet_code, r.finished_good_name || ""])
+    );
+    navigate("/labels", {
+      state: {
+        title:
+          chosen.length === 1 ? chosen[0].finished_good_name : "Selected Labels",
+        codes,
+        namesByCode,
+        mode: "print"
+      },
+    });
+  }
+
+  /** -------------------- UI -------------------- **/
   return (
     <div className="grid">
       <div className="card">
@@ -168,11 +199,22 @@ export default function LiveBarcodes() {
             >
               Download Selected Labels
             </button>
+            <button
+              className="btn ok"
+              onClick={printSelected}
+              disabled={[...selected].length === 0}
+            >
+              🖨️ Print
+            </button>
           </div>
         </div>
 
         <div className="bd" style={{ overflow: "auto" }}>
-          {!!err && <div className="badge err" style={{ marginBottom: 8 }}>{err}</div>}
+          {!!err && (
+            <div className="badge err" style={{ marginBottom: 8 }}>
+              {err}
+            </div>
+          )}
           <table className="table">
             <thead>
               <tr>
@@ -180,7 +222,9 @@ export default function LiveBarcodes() {
                   <input
                     type="checkbox"
                     checked={allVisibleSelected}
-                    ref={(el) => { if (el) el.indeterminate = someVisibleSelected; }}
+                    ref={(el) => {
+                      if (el) el.indeterminate = someVisibleSelected;
+                    }}
                     onChange={(e) => toggleVisible(e.target.checked)}
                   />
                 </th>
