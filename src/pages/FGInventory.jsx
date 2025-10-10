@@ -1,229 +1,261 @@
-import { useEffect, useMemo, useState } from "react";
-import { supabase } from "../supabaseClient";
-import { downloadCSV } from "../utils/csv";
+import { useMemo, useEffect } from "react";
+import QRCode from "qrcode";
+import jsPDF from "jspdf";
+import { useLocation, Link } from "react-router-dom";
 
-export default function FGInventory() {
-  const [rows, setRows] = useState([]);
-  const [loading, setLoading] = useState(true);
-  const [q, setQ] = useState("");
-  const [minQty, setMinQty] = useState("");
-  const [maxQty, setMaxQty] = useState("");
+/** CONFIG (easy tweaks) */
+const LABEL_W = 38; // mm (single label width)
+const LABEL_H = 25; // mm (single label height)
+const PAGE_W = LABEL_W * 2; // 2-up total width
+const PAGE_H = LABEL_H;
+const PAD = 3; // inner padding
+const CORNER = 2; // rounded rect radius
+const QR_MM = 12; // QR side (mm)
+const NAME_FS = 8; // product name font size (pt)
+const NAME_GAP = 3.2; // name line gap (mm)
+const NAME_LINES = 2; // max wrapped lines
+const CODE_FS = 6.5; // code line font size (pt)
+const mmToPx = (mm) => Math.round(mm * (96 / 25.4));
 
-<<<<<<< HEAD
-  // === Load Data
-=======
->>>>>>> 3d382cf (Updated LiveBarcodes, archive cron jobs, and UI improvements)
-  async function load() {
-    setLoading(true);
-    const { data, error } = await supabase
-      .from("v_fg_inventory")
-      .select("*")
-      .order("finished_good_name");
-<<<<<<< HEAD
+export default function Labels() {
+  const { state } = useLocation() || {};
+  const title = state?.title || "Labels";
+  const codes = state?.codes || [];
+  const namesByCode = state?.namesByCode || {};
 
-=======
->>>>>>> 3d382cf (Updated LiveBarcodes, archive cron jobs, and UI improvements)
-    if (error) {
-      alert(error.message);
-      setLoading(false);
-      return;
-    }
-<<<<<<< HEAD
+  const items = useMemo(
+    () =>
+      (codes || []).map((code) => ({
+        code,
+        name: namesByCode[code] || title,
+      })),
+    [codes, namesByCode, title]
+  );
 
-=======
->>>>>>> 3d382cf (Updated LiveBarcodes, archive cron jobs, and UI improvements)
-    setRows(data || []);
-    setLoading(false);
-  }
-
+  /** PREVIEW: render QR onto canvases (true-size) */
   useEffect(() => {
-    load();
-  }, []);
-
-<<<<<<< HEAD
-  // === Filter Logic
-=======
->>>>>>> 3d382cf (Updated LiveBarcodes, archive cron jobs, and UI improvements)
-  const filtered = useMemo(() => {
-    const qq = q.trim().toLowerCase();
-    const min = minQty === "" ? -Infinity : Number(minQty);
-    const max = maxQty === "" ? Infinity : Number(maxQty);
-    return (rows || []).filter((r) => {
-      const matchQ =
-        !qq ||
-<<<<<<< HEAD
-        String(r.finished_good_name || "").toLowerCase().includes(qq) ||
-        String(r.unit || "").toLowerCase().includes(qq);
-=======
-        String(r.finished_good_name || "").toLowerCase().includes(qq);
->>>>>>> 3d382cf (Updated LiveBarcodes, archive cron jobs, and UI improvements)
-      const qty = Number(r.qty_on_hand || 0);
-      return matchQ && qty >= min && qty <= max;
+    const px = mmToPx(QR_MM);
+    document.querySelectorAll("canvas[data-code]").forEach(async (c) => {
+      const code = c.getAttribute("data-code") || "";
+      try {
+        c.width = px;
+        c.height = px;
+        await QRCode.toCanvas(c, code, { width: px, margin: 0 });
+      } catch {}
     });
-  }, [rows, q, minQty, maxQty]);
+  }, [items]);
 
-<<<<<<< HEAD
-  // === Low stock count
-  const lowCount = filtered.filter(
-    (r) => r.low_threshold && Number(r.qty_on_hand) <= Number(r.low_threshold)
-  ).length;
+  /** Shared PDF generator (used by both download + print) */
+  async function generatePDF() {
+    const pdf = new jsPDF({
+      orientation: "landscape",
+      unit: "mm",
+      format: [PAGE_W, PAGE_H], // 76 x 25 mm
+    });
 
-  // === Export CSV
-=======
->>>>>>> 3d382cf (Updated LiveBarcodes, archive cron jobs, and UI improvements)
-  function exportCSV() {
-    downloadCSV(
-      "fg_inventory.csv",
-      filtered.map((r) => ({
-        id: r.finished_good_id,
-<<<<<<< HEAD
-        name: r.finished_good_name,
-        qty_on_hand: r.qty_on_hand,
-        unit: r.unit || "",
-        low_threshold: r.low_threshold || "",
-=======
-        finished_good_name: r.finished_good_name,
-        qty_on_hand: r.qty_on_hand,
->>>>>>> 3d382cf (Updated LiveBarcodes, archive cron jobs, and UI improvements)
-      }))
-    );
+    for (let i = 0; i < items.length; i += 2) {
+      const left = items[i];
+      const right = items[i + 1];
+      await drawLabel(pdf, 0, 0, left);
+      if (right) await drawLabel(pdf, LABEL_W, 0, right);
+      if (i + 2 < items.length) pdf.addPage([PAGE_W, PAGE_H], "landscape");
+    }
+
+    return pdf;
   }
 
-<<<<<<< HEAD
-  // === UI
-=======
->>>>>>> 3d382cf (Updated LiveBarcodes, archive cron jobs, and UI improvements)
+  /** Download */
+  async function downloadPDF() {
+    if (!items.length) return alert("No labels to print");
+    const pdf = await generatePDF();
+    pdf.save(`${String(title).replace(/\s+/g, "_")}_76x25_2up.pdf`);
+  }
+
+  /** ✅ Print directly in same window (no auto-close) */
+  async function printPDF() {
+    if (!items.length) return alert("No labels to print");
+    const pdf = await generatePDF();
+    const blob = pdf.output("blob");
+    const url = URL.createObjectURL(blob);
+
+    // Create hidden iframe for printing (will stay)
+    const iframe = document.createElement("iframe");
+    iframe.style.display = "none";
+    iframe.src = url;
+    document.body.appendChild(iframe);
+
+    iframe.onload = () => {
+      iframe.contentWindow.focus();
+      iframe.contentWindow.print();
+      // Do NOT auto-remove — stays until manual refresh
+    };
+  }
+
   return (
     <div className="grid">
       <div className="card">
         <div className="hd">
-          <b>Finished Goods Inventory</b>
+          <b>{title}</b>
         </div>
-
         <div className="bd">
-<<<<<<< HEAD
-          {/* 🔍 Filters */}
-          <div className="row" style={{ marginBottom: 10, flexWrap: "wrap" }}>
-            <input
-              placeholder="Search FG name / unit…"
-=======
-          <div className="row" style={{ marginBottom: 10 }}>
-            <input
-              placeholder="Search item name…"
->>>>>>> 3d382cf (Updated LiveBarcodes, archive cron jobs, and UI improvements)
-              value={q}
-              onChange={(e) => setQ(e.target.value)}
-            />
-            <input
-              type="number"
-              placeholder="Min qty"
-              value={minQty}
-              onChange={(e) => setMinQty(e.target.value)}
-              style={{ width: 110 }}
-            />
-            <input
-              type="number"
-              placeholder="Max qty"
-              value={maxQty}
-              onChange={(e) => setMaxQty(e.target.value)}
-              style={{ width: 110 }}
-            />
-            <button
-              className="btn ghost"
-              onClick={load}
-              disabled={loading}
-            >
-              {loading ? "Refreshing…" : "Refresh"}
-            </button>
+          <div className="row" style={{ gap: 8, marginBottom: 8 }}>
             <button
               className="btn"
-              onClick={exportCSV}
-              disabled={!filtered.length}
+              onClick={downloadPDF}
+              disabled={!items.length}
             >
-              Export CSV
+              ⬇️ Download 2-up (76×25 mm)
             </button>
+            <button
+              className="btn outline"
+              onClick={printPDF}
+              disabled={!items.length}
+            >
+              🖨️ Print 2-up (76×25 mm)
+            </button>
+            <Link to={-1} className="btn ghost">
+              Back
+            </Link>
           </div>
 
-<<<<<<< HEAD
-          {/* Counts */}
-          <div className="row" style={{ marginBottom: 8 }}>
-            <span className="badge">Items: {filtered.length}</span>
-            <span className="badge">Low: {lowCount}</span>
-          </div>
+          {/* TRUE-SIZE PREVIEW */}
+          {!items.length && <div className="badge">No labels to show</div>}
 
-          {/* 📦 Table */}
-=======
->>>>>>> 3d382cf (Updated LiveBarcodes, archive cron jobs, and UI improvements)
-          <table className="table">
-            <thead>
-              <tr>
-                <th>Finished Good</th>
-                <th style={{ textAlign: "right" }}>On Hand</th>
-<<<<<<< HEAD
-                <th style={{ textAlign: "right" }}>Threshold</th>
-                <th>Unit</th>
-                <th>Status</th>
-              </tr>
-            </thead>
-            <tbody>
-              {filtered.map((r) => {
-                const qty = Number(r.qty_on_hand || 0);
-                const thr = Number(r.low_threshold || 0);
-                const low = thr > 0 && qty <= thr;
-                return (
-                  <tr key={`fg-${r.finished_good_id}`}>
-                    <td>{r.finished_good_name}</td>
-                    <td
+          {!!items.length && (
+            <div
+              style={{
+                display: "grid",
+                gridTemplateColumns: "repeat(auto-fill, 90mm)",
+                gap: "6mm",
+              }}
+            >
+              {chunk2(items).map((pair, pageIdx) => (
+                <div
+                  key={pageIdx}
+                  style={{
+                    width: "76mm",
+                    height: "25mm",
+                    border: "1px dashed #aaa",
+                    borderRadius: "2mm",
+                    padding: 0,
+                    display: "grid",
+                    gridTemplateColumns: "38mm 38mm",
+                  }}
+                >
+                  {pair.map((it, colIdx) => (
+                    <div
+                      key={colIdx}
                       style={{
-                        textAlign: "right",
-                        fontWeight: 700,
+                        width: "38mm",
+                        height: "25mm",
+                        borderRight:
+                          colIdx === 0 ? "0.4mm solid #eee" : "none",
+                        padding: "2mm",
+                        boxSizing: "border-box",
+                        display: "flex",
+                        gap: "2mm",
+                        alignItems: "flex-start",
                       }}
                     >
-                      {qty}
-                    </td>
-                    <td style={{ textAlign: "right" }}>{thr || "-"}</td>
-                    <td>{r.unit || "-"}</td>
-                    <td>
-                      <span
-                        className="badge"
+                      <canvas
+                        data-code={it.code}
+                        style={{ width: `${QR_MM}mm`, height: `${QR_MM}mm` }}
+                      />
+                      <div
                         style={{
-                          borderColor: low ? "var(--err)" : "var(--border)",
-                          color: low ? "var(--err)" : "var(--muted)",
+                          flex: 1,
+                          display: "flex",
+                          flexDirection: "column",
+                          minWidth: 0,
                         }}
                       >
-                        {low ? "Low" : "OK"}
-                      </span>
-                    </td>
-                  </tr>
-                );
-              })}
-              {filtered.length === 0 && (
-                <tr>
-                  <td colSpan={5} style={{ color: "var(--muted)" }}>
-=======
-              </tr>
-            </thead>
-            <tbody>
-              {filtered.map((r) => (
-                <tr key={r.finished_good_id}>
-                  <td>{r.finished_good_name}</td>
-                  <td style={{ textAlign: "right", fontWeight: 700 }}>
-                    {r.qty_on_hand}
-                  </td>
-                </tr>
+                        <div
+                          style={{
+                            fontWeight: 700,
+                            fontSize: "8pt",
+                            lineHeight: 1.05,
+                            display: "-webkit-box",
+                            WebkitLineClamp: 2,
+                            WebkitBoxOrient: "vertical",
+                            overflow: "hidden",
+                          }}
+                        >
+                          {it.name}
+                        </div>
+                        <div
+                          style={{
+                            marginTop: "auto",
+                            fontFamily: "monospace",
+                            fontSize: "7pt",
+                            lineHeight: 1,
+                            wordBreak: "break-all",
+                          }}
+                        >
+                          {it.code}
+                        </div>
+                      </div>
+                    </div>
+                  ))}
+                  {pair.length === 1 && <div />} {/* placeholder for odd last */}
+                </div>
               ))}
-              {filtered.length === 0 && (
-                <tr>
-                  <td colSpan={2} style={{ color: "var(--muted)" }}>
->>>>>>> 3d382cf (Updated LiveBarcodes, archive cron jobs, and UI improvements)
-                    No items found
-                  </td>
-                </tr>
-              )}
-            </tbody>
-          </table>
+            </div>
+          )}
+
+          <div className="s" style={{ color: "var(--muted)", marginTop: 8 }}>
+            Printer setup (TSC TTP-244 Pro): set paper to{" "}
+            <b>76×25 mm (2-up)</b>, scale <b>100%</b>, disable auto-rotate /
+            fit-to-page, calibrate gap sensor if alignment drifts.
+          </div>
         </div>
       </div>
     </div>
   );
+}
+
+/* ---------- helpers ---------- */
+function chunk2(arr) {
+  const out = [];
+  for (let i = 0; i < arr.length; i += 2) out.push(arr.slice(i, i + 2));
+  return out;
+}
+
+async function drawLabel(pdf, ox, oy, item) {
+  if (!item) return;
+  const W = LABEL_W,
+    H = LABEL_H;
+  const pad = PAD,
+    r = CORNER;
+  const qrSize = QR_MM;
+  const textLeft = pad + qrSize + 2;
+  const textRightPad = 2;
+  const textBoxW = W - textLeft - textRightPad;
+
+  // Border for alignment
+  pdf.setDrawColor(200);
+  pdf.roundedRect(ox, oy, W, H, r, r, "S");
+
+  // QR
+  const qr = await QRCode.toDataURL(item.code, {
+    margin: 0,
+    width: mmToPx(qrSize),
+  });
+  pdf.addImage(qr, "PNG", ox + pad, oy + pad, qrSize, qrSize);
+
+  // Name
+  pdf.setFont("helvetica", "bold");
+  pdf.setFontSize(NAME_FS);
+  const lines = pdf
+    .splitTextToSize(String(item.name || ""), textBoxW)
+    .slice(0, NAME_LINES);
+  lines.forEach((ln, i) => {
+    pdf.text(ln, ox + textLeft, oy + pad + 4 + i * NAME_GAP, {
+      baseline: "top",
+    });
+  });
+
+  // Code
+  pdf.setFont("courier", "normal");
+  pdf.setFontSize(CODE_FS);
+  pdf.text(item.code, ox + pad, oy + H - 5, { maxWidth: W - pad * 2 });
 }
