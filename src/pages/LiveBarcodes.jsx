@@ -28,7 +28,7 @@ export default function LiveBarcodes() {
       .select(
         "id, packet_code, finished_good_name, bin_code, status, returned_at, produced_at, is_no_barcode_return"
       )
-      .eq("status", "live") // ✅ fetch only live barcodes
+      .eq("status", "available") // ✅ fetch only live barcodes
       .order("id", { ascending: false });
     if (error) {
       console.error(error);
