@@ -28,8 +28,10 @@ export default function LiveBarcodes() {
       .select(
         "id, packet_code, finished_good_name, bin_code, status, returned_at, produced_at, is_no_barcode_return"
       )
-      .eq("status", "available") // ✅ fetch only live barcodes
+      // ✅ fetch only barcodes with status available OR returned
+      .in("status", ["available", "returned"])
       .order("id", { ascending: false });
+
     if (error) {
       console.error(error);
       setErr(error.message || String(error));
@@ -45,7 +47,7 @@ export default function LiveBarcodes() {
   useEffect(() => {
     load();
 
-    // refresh every 30 s (lightweight, won't lag)
+    // refresh every 30 s
     const timer = setInterval(load, 30_000);
 
     // realtime triggers on DB changes
@@ -141,7 +143,7 @@ export default function LiveBarcodes() {
           chosen.length === 1 ? chosen[0].finished_good_name : "Selected Labels",
         codes,
         namesByCode,
-        mode: "download"
+        mode: "download",
       },
     });
   }
@@ -163,7 +165,7 @@ export default function LiveBarcodes() {
           chosen.length === 1 ? chosen[0].finished_good_name : "Selected Labels",
         codes,
         namesByCode,
-        mode: "print"
+        mode: "print",
       },
     });
   }
@@ -270,4 +272,3 @@ export default function LiveBarcodes() {
     </div>
   );
 }
-
