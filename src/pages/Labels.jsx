@@ -11,9 +11,9 @@ const PAGE_H = LABEL_H;
 const PAD = 3; // inner padding
 const CORNER = 2; // rounded rect radius
 const QR_MM = 12; // QR side (mm)
-const NAME_FS = 8; // product name font size (pt)
+const NAME_FS = 7; // product name font size (pt)
 const NAME_GAP = 3.2; // name line gap (mm)
-const NAME_LINES = 2; // max wrapped lines
+const NAME_LINES = 3; // max wrapped lines
 const CODE_FS = 6.5; // code line font size (pt)
 const mmToPx = (mm) => Math.round(mm * (96 / 25.4));
 
