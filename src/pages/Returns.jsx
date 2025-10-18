@@ -1,6 +1,31 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { supabase } from "../supabaseClient";
 import AsyncFGSelect from "../components/AsyncFGSelect.jsx";
+import { useNavigate } from "react-router-dom";
+
+/** --- simple internal toast --- **/
+function Toast({ message, type }) {
+  return (
+    <div
+      style={{
+        position: "fixed",
+        bottom: 20,
+        right: 20,
+        background: type === "err" ? "#ffbaba" : "#d4edda",
+        color: type === "err" ? "#721c24" : "#155724",
+        border: "1px solid",
+        borderColor: type === "err" ? "#f5c6cb" : "#c3e6cb",
+        padding: "8px 14px",
+        borderRadius: 8,
+        zIndex: 1000,
+        boxShadow: "0 2px 6px rgba(0,0,0,0.2)",
+        maxWidth: 320,
+      }}
+    >
+      {message}
+    </div>
+  );
+}
 
 function fmt(d) {
   if (!d) return "—";
@@ -11,8 +36,15 @@ function fmt(d) {
 
 export default function Returns() {
   const [tab, setTab] = useState("scan"); // scan | nobarcode | scrap
+  const navigate = useNavigate();
 
-  // === Return by Scan
+  const [toast, setToast] = useState(null);
+  function showToast(message, type = "ok", time = 2000) {
+    setToast({ message, type });
+    setTimeout(() => setToast(null), time);
+  }
+
+  // === Return by Scan ===
   const [scanCode, setScanCode] = useState("");
   const [scanNote, setScanNote] = useState("");
   const [scanBusy, setScanBusy] = useState(false);
@@ -20,13 +52,14 @@ export default function Returns() {
   const scanTimer = useRef(null);
   const scanRef = useRef(null);
 
-  // === No-barcode
+  // === No-barcode ===
   const [nbFgId, setNbFgId] = useState("");
   const [nbQty, setNbQty] = useState(1);
   const [nbNote, setNbNote] = useState("");
   const [nbBusy, setNbBusy] = useState(false);
+  const [nbCreated, setNbCreated] = useState([]); // 🆕 Last run preview
 
-  // === Scrap
+  // === Scrap ===
   const [scrapCode, setScrapCode] = useState("");
   const [scrapNote, setScrapNote] = useState("");
   const [scrapBusy, setScrapBusy] = useState(false);
@@ -34,12 +67,12 @@ export default function Returns() {
   const scrapTimer = useRef(null);
   const scrapRef = useRef(null);
 
-  // === Recent
+  // === Recent ===
   const [rows, setRows] = useState([]);
   const [q, setQ] = useState("");
   const [loadingRows, setLoadingRows] = useState(false);
 
-  // === Load recent returns
+  /** ---------------- LOAD RECENT RETURNS ---------------- **/
   async function loadRows() {
     setLoadingRows(true);
     const { data, error } = await supabase
@@ -47,17 +80,13 @@ export default function Returns() {
       .select("*")
       .order("returned_at", { ascending: false })
       .limit(200);
-
-    if (error) {
-      console.error(error);
-      setRows([]);
-    } else setRows(data || []);
+    if (error) console.error(error);
+    setRows(data || []);
     setLoadingRows(false);
   }
 
   useEffect(() => {
     loadRows();
-    // realtime refresh
     const ch = supabase
       .channel("realtime:packet_returns")
       .on(
@@ -80,7 +109,7 @@ export default function Returns() {
     );
   }, [rows, q]);
 
-  // === Return by Scan
+  /** ---------------- RETURN BY SCAN ---------------- **/
   async function doReturnByScan(code) {
     const barcode = (code || "").trim();
     if (!barcode || scanBusy) return;
@@ -91,14 +120,15 @@ export default function Returns() {
         p_note: scanNote || null,
       });
       if (error) throw error;
+
       const msg =
-        data?.message || `✅ Packet ${barcode} successfully returned`;
-      alert(msg);
+        data?.message || `Packet ${barcode} successfully returned`;
+      showToast(msg, "ok");
       setScanCode("");
       setScanNote("");
-      await loadRows();
+      loadRows();
     } catch (err) {
-      alert(`⚠️ ${err.message}`);
+      showToast(err.message || "Return failed", "err");
     } finally {
       setScanBusy(false);
       setTimeout(() => scanRef.current?.focus(), 0);
@@ -121,7 +151,7 @@ export default function Returns() {
     return () => clearTimeout(scanTimer.current);
   }, [scanCode, autoScan, tab]);
 
-  // === No Barcode Return
+  /** ---------------- NO BARCODE RETURN ---------------- **/
   async function doNoBarcode() {
     if (!nbFgId) return alert("Select a Finished Good");
     const qty = Number(nbQty);
@@ -137,30 +167,63 @@ export default function Returns() {
       });
       if (error) throw error;
 
-      if (data?.ok) {
-        const codes =
-          Array.isArray(data.barcodes) && data.barcodes.length
-            ? data.barcodes.join(", ")
-            : "(barcode generated)";
-        alert(
-          `✅ ${data.fg_name || "Finished Good"} — ${qty} packet(s) created.\nBarcodes: ${codes}`
+      const barcodes =
+        data?.barcodes && Array.isArray(data.barcodes)
+          ? data.barcodes.map((b) => ({
+              code: b,
+              name: data?.fg_name?.toUpperCase() || "UNKNOWN",
+            }))
+          : [];
+
+      if (barcodes.length) {
+        setNbCreated(barcodes);
+        showToast(
+          `✅ ${barcodes.length} packet(s) created (${data?.fg_name})`,
+          "ok"
         );
       } else {
-        alert("✅ No-barcode return created successfully.");
+        showToast("✅ No-barcode return created.", "ok");
       }
 
       setNbFgId("");
       setNbQty(1);
       setNbNote("");
-      await loadRows();
+      loadRows();
     } catch (err) {
-      alert(`⚠️ ${err.message}`);
+      showToast(err.message || "Failed", "err");
     } finally {
       setNbBusy(false);
     }
   }
 
-  // === Scrap by Scan
+  function openNbLabels() {
+    if (!nbCreated.length) return;
+    const codes = nbCreated.map((x) => x.code);
+    const namesByCode = Object.fromEntries(
+      nbCreated.map((x) => [x.code, x.name])
+    );
+    navigate("/labels", {
+      state: { title: "No Barcode Return", codes, namesByCode },
+    });
+  }
+
+  function printNbLabels() {
+    if (!nbCreated.length) return;
+    const codes = nbCreated.map((x) => x.code);
+    const namesByCode = Object.fromEntries(
+      nbCreated.map((x) => [x.code, x.name])
+    );
+    navigate("/labels", {
+      state: {
+        title: "No Barcode Return",
+        codes,
+        namesByCode,
+        autoPrint: true,
+      },
+    });
+  }
+
+  /** ---------------- SCRAP BY SCAN ---------------- **/
   async function doScrapByScan(code) {
     const barcode = (code || "").trim();
     if (!barcode || scrapBusy) return;
@@ -171,17 +234,15 @@ export default function Returns() {
         p_note: scrapNote || null,
       });
       if (error) throw error;
-
       const msg =
         data?.message ||
-        `♻️ Packet ${barcode} marked scrapped. RM recovery recorded.`;
-      alert(msg);
-
+        `Packet ${barcode} marked scrapped and RM recovery logged`;
+      showToast(msg, "ok");
       setScrapCode("");
       setScrapNote("");
-      await loadRows();
+      loadRows();
     } catch (err) {
-      alert(`⚠️ ${err.message}`);
+      showToast(err.message || "Scrap failed", "err");
     } finally {
       setScrapBusy(false);
       setTimeout(() => scrapRef.current?.focus(), 0);
@@ -204,9 +265,11 @@ export default function Returns() {
     return () => clearTimeout(scrapTimer.current);
   }, [scrapCode, autoScrap, tab]);
 
-  // === UI ===
+  /** ---------------- UI ---------------- **/
   return (
     <div className="grid">
+      {toast && <Toast message={toast.message} type={toast.type} />}
+
       <div className="card">
         <div className="hd">
           <b>Returns</b>
@@ -268,15 +331,12 @@ export default function Returns() {
                 Auto-scan
               </label>
             </div>
-            <div className="s" style={{ color: "var(--muted)" }}>
-              Only previously outwarded packets can be returned.
-            </div>
           </div>
         )}
 
         {/* === No Barcode Return === */}
         {tab === "nobarcode" && (
-          <div className="bd grid gap-2">
+          <div className="bd grid gap-3">
             <div className="row flex-wrap gap-2">
               <AsyncFGSelect
                 value={nbFgId}
@@ -302,11 +362,50 @@ export default function Returns() {
                 {nbBusy ? "Working…" : "Create Returns"}
               </button>
             </div>
-            <div className="s" style={{ color: "var(--muted)" }}>
-              Creates new packets (FG IN, reason{" "}
-              <code>return_no_barcode</code>). They appear in live barcodes as
-              “No-Barcode Return”.
-            </div>
+
+            {/* 🆕 Last Run Preview */}
+            {!!nbCreated.length && (
+              <div className="card">
+                <div className="hd">
+                  <b>Last Run Preview (No Barcode Returns)</b>
+                  <span className="badge">
+                    {nbCreated.length} packet(s)
+                  </span>
+                  <div className="row" style={{ gap: 8 }}>
+                    <button className="btn outline" onClick={openNbLabels}>
+                      Open Labels
+                    </button>
+                    <button className="btn" onClick={printNbLabels}>
+                      🖨️ Print Labels
+                    </button>
+                  </div>
+                </div>
+                <div className="bd">
+                  <div
+                    className="grid"
+                    style={{
+                      gridTemplateColumns: "repeat(auto-fill,minmax(240px,1fr))",
+                    }}
+                  >
+                    {nbCreated.map((x) => (
+                      <div key={x.code} className="card">
+                        <div className="bd">
+                          <div style={{ fontWeight: 600 }}>{x.name}</div>
+                          <code
+                            style={{
+                              fontFamily: "monospace",
+                              wordBreak: "break-all",
+                            }}
+                          >
+                            {x.code}
+                          </code>
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              </div>
+            )}
           </div>
         )}
 
@@ -344,9 +443,6 @@ export default function Returns() {
                 />
                 Auto-scan
               </label>
-            </div>
-            <div className="s" style={{ color: "var(--muted)" }}>
-              When scrapped, FG OUT + RM IN (recovery) is logged automatically.
             </div>
           </div>
         )}
