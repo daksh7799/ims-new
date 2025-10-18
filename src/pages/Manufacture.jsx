@@ -115,7 +115,7 @@ export default function ManufacturePage() {
   const [bulkLoading, setBulkLoading] = useState(false);
   const [bulkCreated, setBulkCreated] = useState([]);
 
-  // ✅ Fetch ALL finished goods (2k+)
+  // ✅ Fetch ALL finished goods (handles 2k+ rows)
   useEffect(() => {
     (async () => {
       let all = [];
@@ -174,7 +174,7 @@ export default function ManufacturePage() {
     reader.readAsBinaryString(f);
   }
 
-  // ✅ BULK MANUFACTURE with robust matching
+  // ✅ BULK MANUFACTURE (preserves original capitalization)
   async function runBulk() {
     if (rows.length === 0) return alert("No valid rows in sheet");
 
@@ -182,7 +182,7 @@ export default function ManufacturePage() {
     const all = [];
 
     try {
-      // 1️⃣ Normalize (removes Excel hidden chars, spacing, etc.)
+      // 1️⃣ Normalizer for matching only (case-insensitive)
       const normalize = (s) =>
         s
           ?.toString()
@@ -204,24 +204,30 @@ export default function ManufacturePage() {
 
       console.log("✅ Finished Goods in index:", Object.keys(idx).length);
 
-      // 3️⃣ Group by FG name
+      // 3️⃣ Group by normalized key but preserve Excel capitalization
       const grouped = {};
       for (const r of rows) {
-        const key = normalize(r.name);
+        const originalName = String(r.name || "").trim();
+        const key = normalize(originalName);
         const qty = Math.max(1, Math.floor(Number(r.qty)));
         if (!key || !qty) continue;
-        grouped[key] = (grouped[key] || 0) + qty;
+
+        if (!grouped[key])
+          grouped[key] = { name: originalName, qty: 0 };
+        grouped[key].qty += qty;
       }
 
       const entries = Object.entries(grouped);
       console.log("🧾 Unique normalized rows:", entries.length);
 
       // 4️⃣ Manufacture each unique FG
-      for (const [key, totalQty] of entries) {
+      for (const [key, val] of entries) {
+        const { name: displayName, qty: totalQty } = val;
         const fgUUID = idx[key];
+
         if (!fgUUID) {
-          console.warn(`⚠️ FG not found in DB: "${key}"`);
-          alert(`FG not found: ${key}`);
+          console.warn(`⚠️ FG not found in DB: "${displayName}"`);
+          alert(`FG not found: ${displayName}`);
           continue;
         }
 
@@ -230,14 +236,14 @@ export default function ManufacturePage() {
           { p_finished_good_id: fgUUID, p_qty_units: totalQty }
         );
         if (error) {
-          console.error(`❌ RPC error for ${key}:`, error);
+          console.error(`❌ RPC error for ${displayName}:`, error);
           continue;
         }
 
         const batchId = data?.batch_id;
         const made = Number(data?.packets_created || 0);
         if (!batchId || made <= 0) {
-          console.warn(`⚠️ No packets created for ${key}`);
+          console.warn(`⚠️ No packets created for ${displayName}`);
           continue;
         }
 
@@ -248,12 +254,18 @@ export default function ManufacturePage() {
           .order("id");
 
         if (e2) {
-          console.error(`⚠️ Fetch packets failed for ${key}:`, e2.message);
+          console.error(
+            `⚠️ Fetch packets failed for ${displayName}:`,
+            e2.message
+          );
           continue;
         }
 
-        ps?.forEach((p) => all.push({ code: p.packet_code, name: key }));
-        console.log(`✅ ${made} packets created for ${key}`);
+        // ✅ Keep your Excel capitalization
+        ps?.forEach((p) =>
+          all.push({ code: p.packet_code, name: displayName })
+        );
+        console.log(`✅ ${made} packets created for ${displayName}`);
       }
 
       setBulkCreated(all);
@@ -329,7 +341,6 @@ export default function ManufacturePage() {
         </div>
 
         <div className="bd">
-          {/* === SINGLE === */}
           {tab === "single" && (
             <>
               <div
@@ -438,7 +449,6 @@ export default function ManufacturePage() {
             </>
           )}
 
-          {/* === BULK === */}
           {tab === "bulk" && (
             <>
               <div
@@ -483,9 +493,13 @@ export default function ManufacturePage() {
                 </button>
               </div>
 
-              <div className="s" style={{ color: "var(--muted)", marginTop: 6 }}>
-                Columns required: <code>finished_good</code>, <code>qty</code>.  
-                Upload this same format for your manufacturing batches.
+              <div
+                className="s"
+                style={{ color: "var(--muted)", marginTop: 6 }}
+              >
+                Columns required: <code>finished_good</code>,{" "}
+                <code>qty</code>. Upload this same format for your
+                manufacturing batches.
               </div>
 
               <div className="card" style={{ marginTop: 10 }}>
