@@ -1,255 +1,433 @@
-import { useEffect, useState } from 'react'
-import * as XLSX from 'xlsx'
-import { saveAs } from 'file-saver'
-import { supabase } from '../supabaseClient'
-import { useNavigate } from 'react-router-dom'
-import AsyncFGSelect from '../components/AsyncFGSelect.jsx'
+import { useEffect, useState } from "react";
+import * as XLSX from "xlsx";
+import { saveAs } from "file-saver";
+import { supabase } from "../supabaseClient";
+import { useNavigate } from "react-router-dom";
+import AsyncFGSelect from "../components/AsyncFGSelect.jsx";
 
-const LS_SINGLE = 'lastSingleRun'
-const LS_BULK   = 'lastBulkRun'
+const LS_SINGLE = "lastSingleRun";
+const LS_BULK = "lastBulkRun";
 
-export default function ManufacturePage(){
-  const [tab,setTab]=useState('single')
-  const navigate = useNavigate()
+export default function ManufacturePage() {
+  const [tab, setTab] = useState("single");
+  const navigate = useNavigate();
 
-  // ===== Single =====
-  const [fgId,setFgId]=useState('')
-  const [fgName,setFgName]=useState('')
-  const [qty,setQty]=useState(1)
-  const [making,setMaking]=useState(false)
-  const [lastBatch, setLastBatch] = useState(null)
-  const [singleCreated,setSingleCreated]=useState([])
+  /** ========== SINGLE MANUFACTURE ========== **/
+  const [fgId, setFgId] = useState("");
+  const [fgName, setFgName] = useState("");
+  const [qty, setQty] = useState(1);
+  const [making, setMaking] = useState(false);
+  const [lastBatch, setLastBatch] = useState(null);
+  const [singleCreated, setSingleCreated] = useState([]);
 
-  useEffect(()=>{
-    try{
-      const saved = JSON.parse(localStorage.getItem(LS_SINGLE)||'[]')
-      if(Array.isArray(saved)) setSingleCreated(saved)
-    }catch{}
-  },[])
+  useEffect(() => {
+    try {
+      const saved = JSON.parse(localStorage.getItem(LS_SINGLE) || "[]");
+      if (Array.isArray(saved)) setSingleCreated(saved);
+    } catch {}
+  }, []);
 
-  async function manufactureOnce(){
-    if(!fgId) return alert('Select a finished good')
-    const n = Math.max(1, Math.floor(Number(qty)))
-    if(!Number.isFinite(n) || n<=0) return alert('Enter valid quantity (>=1)')
+  async function manufactureOnce() {
+    if (!fgId) return alert("Select a finished good");
+    const n = Math.max(1, Math.floor(Number(qty)));
+    if (!Number.isFinite(n) || n <= 0)
+      return alert("Enter valid quantity (>=1)");
 
-    setMaking(true)
-    setLastBatch(null)
-    try{
-      const { data, error } = await supabase.rpc('create_manufacture_batch_v3', {
-        p_finished_good_id: fgId,
-        p_qty_units: n
-      })
-      if(error) throw error
+    setMaking(true);
+    setLastBatch(null);
+    try {
+      const { data, error } = await supabase.rpc(
+        "create_manufacture_batch_v3",
+        {
+          p_finished_good_id: fgId,
+          p_qty_units: n,
+        }
+      );
+      if (error) throw error;
 
-      const batchId = data?.batch_id
-      const made = Number(data?.packets_created || 0)
-      if(!batchId || made<=0) throw new Error('Manufacture failed (no packets)')
+      const batchId = data?.batch_id;
+      const made = Number(data?.packets_created || 0);
+      if (!batchId || made <= 0)
+        throw new Error("Manufacture failed (no packets)");
 
-      setLastBatch({ batch_id: batchId, packets_created: made })
+      setLastBatch({ batch_id: batchId, packets_created: made });
 
       const { data: ps, error: e2 } = await supabase
-        .from('packets')
-        .select('packet_code')
-        .eq('batch_id', batchId)
-        .order('id')
-      if(e2) throw e2
+        .from("packets")
+        .select("packet_code")
+        .eq("batch_id", batchId)
+        .order("id");
+      if (e2) throw e2;
 
-      const list = (ps||[]).map(p => ({ code: p.packet_code, name: fgName || '' }))
-      setSingleCreated(list)
-      try{ localStorage.setItem(LS_SINGLE, JSON.stringify(list)) }catch{}
-    }catch(err){
-      alert(err.message||String(err))
-    }finally{
-      setMaking(false)
+      const list = (ps || []).map((p) => ({
+        code: p.packet_code,
+        name: fgName || "",
+      }));
+      setSingleCreated(list);
+      try {
+        localStorage.setItem(LS_SINGLE, JSON.stringify(list));
+      } catch {}
+    } catch (err) {
+      alert(err.message || String(err));
+    } finally {
+      setMaking(false);
     }
   }
 
-  function openLabelsSingle(){
-    if(!singleCreated.length) return
-    const codes = singleCreated.map(x=>x.code)
-    const namesByCode = Object.fromEntries(singleCreated.map(x=>[x.code, x.name]))
-    navigate('/labels', { state: { title: fgName || 'Labels', codes, namesByCode } })
+  function openLabelsSingle() {
+    if (!singleCreated.length) return;
+    const codes = singleCreated.map((x) => x.code);
+    const namesByCode = Object.fromEntries(
+      singleCreated.map((x) => [x.code, x.name])
+    );
+    navigate("/labels", {
+      state: { title: fgName || "Labels", codes, namesByCode },
+    });
   }
 
-  function printLabelsSingle(){
-    if(!singleCreated.length) return
-    const codes = singleCreated.map(x=>x.code)
-    const namesByCode = Object.fromEntries(singleCreated.map(x=>[x.code, x.name]))
-    navigate('/labels', { state: { title: fgName || 'Labels', codes, namesByCode, autoPrint: true } })
+  function printLabelsSingle() {
+    if (!singleCreated.length) return;
+    const codes = singleCreated.map((x) => x.code);
+    const namesByCode = Object.fromEntries(
+      singleCreated.map((x) => [x.code, x.name])
+    );
+    navigate("/labels", {
+      state: {
+        title: fgName || "Labels",
+        codes,
+        namesByCode,
+        autoPrint: true,
+      },
+    });
   }
 
-  function clearLastSingle(){
-    setSingleCreated([]); setLastBatch(null)
-    try{ localStorage.removeItem(LS_SINGLE) }catch{}
+  function clearLastSingle() {
+    setSingleCreated([]);
+    setLastBatch(null);
+    try {
+      localStorage.removeItem(LS_SINGLE);
+    } catch {}
   }
 
-  // ===== Bulk =====
-  const [fgList,setFgList]=useState([])
-  const [rows,setRows]=useState([])
-  const [bulkLoading,setBulkLoading]=useState(false)
-  const [bulkCreated,setBulkCreated]=useState([])
+  /** ========== BULK MANUFACTURE ========== **/
+  const [fgList, setFgList] = useState([]);
+  const [rows, setRows] = useState([]);
+  const [bulkLoading, setBulkLoading] = useState(false);
+  const [bulkCreated, setBulkCreated] = useState([]);
 
-  useEffect(()=>{ (async ()=>{
-    const { data } = await supabase
-      .from('finished_goods')
-      .select('id,name')
-      .eq('is_active', true)
-      .order('name')
-    setFgList(data||[])
-  })() },[])
+  // ✅ Fetch ALL finished goods (2k+)
+  useEffect(() => {
+    (async () => {
+      let all = [];
+      let from = 0;
+      const pageSize = 1000;
+      while (true) {
+        const { data, error } = await supabase
+          .from("finished_goods")
+          .select("id,name")
+          .eq("is_active", true)
+          .order("name", { ascending: true })
+          .range(from, from + pageSize - 1);
+        if (error) throw error;
+        if (!data?.length) break;
+        all = all.concat(data);
+        if (data.length < pageSize) break;
+        from += pageSize;
+      }
+      console.log(`✅ Loaded ${all.length} finished goods from DB`);
+      setFgList(all);
+    })().catch((err) => {
+      console.error("Failed to load finished_goods:", err);
+      alert(`Failed to load finished_goods: ${err.message || err}`);
+    });
+  }, []);
 
-  useEffect(()=>{
-    try{
-      const saved = JSON.parse(localStorage.getItem(LS_BULK) || '[]')
-      if(Array.isArray(saved)) setBulkCreated(saved)
-    }catch{}
-  },[])
+  useEffect(() => {
+    try {
+      const saved = JSON.parse(localStorage.getItem(LS_BULK) || "[]");
+      if (Array.isArray(saved)) setBulkCreated(saved);
+    } catch {}
+  }, []);
 
-  function onFile(e){
-    const f = e.target.files?.[0]; if(!f) return
-    const reader = new FileReader()
-    reader.onload = ev => {
-      const wb = XLSX.read(ev.target.result, { type:'binary' })
-      const ws = wb.Sheets[wb.SheetNames[0]]
-      const json = XLSX.utils.sheet_to_json(ws, { defval:'' })
-      const normalized = json.map(r=>{
-        const name = String(
-          r.finished_good ?? r.FINISHED_GOOD ?? r['finished good'] ?? ''
-        ).trim()
-        const qty  = Math.max(1, Math.floor(Number(r.qty ?? r.QTY ?? 0)))
-        return { name, qty }
-      }).filter(r=>r.name && r.qty>0)
-      setRows(normalized)
-    }
-    reader.readAsBinaryString(f)
-  }
-
-  async function runBulk(){
-    if(rows.length===0) return alert('No valid rows in sheet')
-    setBulkLoading(true)
-    const all=[]
-
-    try{
-      const idx = {}
-      fgList.forEach(f => { idx[f.name.trim().toLowerCase()] = f.id })
-
-      for(const r of rows){
-        const fgUUID = idx[r.name.trim().toLowerCase()]
-        if(!fgUUID){ alert(`FG not found: ${r.name}`); continue }
-
-        const { data, error } = await supabase.rpc('create_manufacture_batch_v3', {
-          p_finished_good_id: fgUUID,
-          p_qty_units: Math.max(1, Math.floor(Number(r.qty)))
+  function onFile(e) {
+    const f = e.target.files?.[0];
+    if (!f) return;
+    const reader = new FileReader();
+    reader.onload = (ev) => {
+      const wb = XLSX.read(ev.target.result, { type: "binary" });
+      const ws = wb.Sheets[wb.SheetNames[0]];
+      const json = XLSX.utils.sheet_to_json(ws, { defval: "" });
+      const normalized = json
+        .map((r) => {
+          const name = String(
+            r.finished_good ??
+              r.FINISHED_GOOD ??
+              r["finished good"] ??
+              ""
+          ).trim();
+          const qty = Math.max(1, Math.floor(Number(r.qty ?? r.QTY ?? 0)));
+          return { name, qty };
         })
-        if(error){ alert(`Error for ${r.name}: ${error.message}`); continue }
+        .filter((r) => r.name && r.qty > 0);
+      setRows(normalized);
+    };
+    reader.readAsBinaryString(f);
+  }
 
-        const batchId = data?.batch_id
-        const made = Number(data?.packets_created || 0)
-        if(!batchId || made<=0){ alert(`No packets for ${r.name}`); continue }
+  // ✅ BULK MANUFACTURE with robust matching
+  async function runBulk() {
+    if (rows.length === 0) return alert("No valid rows in sheet");
 
-        const { data: ps, error: e2 } = await supabase
-          .from('packets')
-          .select('packet_code')
-          .eq('batch_id', batchId)
-          .order('id')
-        if(e2){ alert(`Fetch packets failed for ${r.name}: ${e2.message}`); continue }
+    setBulkLoading(true);
+    const all = [];
 
-        ps?.forEach(p=>all.push({ code:p.packet_code, name:r.name }))
+    try {
+      // 1️⃣ Normalize (removes Excel hidden chars, spacing, etc.)
+      const normalize = (s) =>
+        s
+          ?.toString()
+          .normalize("NFKC")
+          .replace(/\s+/g, " ")
+          .replace(/\u00A0/g, " ")
+          .replace(/[“”‘’]/g, '"')
+          .replace(/’/g, "'")
+          .replace(/[‐-‒–—―]/g, "-")
+          .replace(/\( *([^)]+) *\)/g, (_, x) => `(${x.trim()})`)
+          .trim()
+          .toLowerCase() || "";
+
+      // 2️⃣ Build lookup
+      const idx = {};
+      fgList.forEach((f) => {
+        idx[normalize(f.name)] = f.id;
+      });
+
+      console.log("✅ Finished Goods in index:", Object.keys(idx).length);
+
+      // 3️⃣ Group by FG name
+      const grouped = {};
+      for (const r of rows) {
+        const key = normalize(r.name);
+        const qty = Math.max(1, Math.floor(Number(r.qty)));
+        if (!key || !qty) continue;
+        grouped[key] = (grouped[key] || 0) + qty;
       }
 
-      setBulkCreated(all)
-      try{ localStorage.setItem(LS_BULK, JSON.stringify(all)) }catch{}
+      const entries = Object.entries(grouped);
+      console.log("🧾 Unique normalized rows:", entries.length);
+
+      // 4️⃣ Manufacture each unique FG
+      for (const [key, totalQty] of entries) {
+        const fgUUID = idx[key];
+        if (!fgUUID) {
+          console.warn(`⚠️ FG not found in DB: "${key}"`);
+          alert(`FG not found: ${key}`);
+          continue;
+        }
+
+        const { data, error } = await supabase.rpc(
+          "create_manufacture_batch_v3",
+          { p_finished_good_id: fgUUID, p_qty_units: totalQty }
+        );
+        if (error) {
+          console.error(`❌ RPC error for ${key}:`, error);
+          continue;
+        }
+
+        const batchId = data?.batch_id;
+        const made = Number(data?.packets_created || 0);
+        if (!batchId || made <= 0) {
+          console.warn(`⚠️ No packets created for ${key}`);
+          continue;
+        }
+
+        const { data: ps, error: e2 } = await supabase
+          .from("packets")
+          .select("packet_code")
+          .eq("batch_id", batchId)
+          .order("id");
+
+        if (e2) {
+          console.error(`⚠️ Fetch packets failed for ${key}:`, e2.message);
+          continue;
+        }
+
+        ps?.forEach((p) => all.push({ code: p.packet_code, name: key }));
+        console.log(`✅ ${made} packets created for ${key}`);
+      }
+
+      setBulkCreated(all);
+      try {
+        localStorage.setItem(LS_BULK, JSON.stringify(all));
+      } catch {}
+
+      alert(`✅ Bulk manufacturing complete — ${all.length} packets created.`);
+    } catch (err) {
+      console.error("💥 Bulk run failed:", err);
+      alert(`Bulk manufacturing failed: ${err.message || err}`);
     } finally {
-      setBulkLoading(false)
+      setBulkLoading(false);
     }
   }
 
-  function openLabelsBulk(){
-    if(!bulkCreated.length) return
-    const codes = bulkCreated.map(x=>x.code)
-    const namesByCode = Object.fromEntries(bulkCreated.map(x=>[x.code, x.name]))
-    navigate('/labels', { state: { title: 'Bulk Labels', codes, namesByCode } })
+  function openLabelsBulk() {
+    if (!bulkCreated.length) return;
+    const codes = bulkCreated.map((x) => x.code);
+    const namesByCode = Object.fromEntries(
+      bulkCreated.map((x) => [x.code, x.name])
+    );
+    navigate("/labels", {
+      state: { title: "Bulk Labels", codes, namesByCode },
+    });
   }
 
-  function printLabelsBulk(){
-    if(!bulkCreated.length) return
-    const codes = bulkCreated.map(x=>x.code)
-    const namesByCode = Object.fromEntries(bulkCreated.map(x=>[x.code, x.name]))
-    navigate('/labels', { state: { title: 'Bulk Labels', codes, namesByCode, autoPrint: true } })
+  function printLabelsBulk() {
+    if (!bulkCreated.length) return;
+    const codes = bulkCreated.map((x) => x.code);
+    const namesByCode = Object.fromEntries(
+      bulkCreated.map((x) => [x.code, x.name])
+    );
+    navigate("/labels", {
+      state: { title: "Bulk Labels", codes, namesByCode, autoPrint: true },
+    });
   }
 
-  // ✅ Download blank CSV template
   function downloadTemplateCSV() {
-    const headers = ['finished_good', 'qty']
-    const csvContent = headers.join(',') + '\n'
-    const blob = new Blob([csvContent], { type: 'text/csv;charset=utf-8;' })
-    saveAs(blob, 'bulk_template.csv')
+    const headers = ["finished_good", "qty"];
+    const csvContent = headers.join(",") + "\n";
+    const blob = new Blob([csvContent], { type: "text/csv;charset=utf-8;" });
+    saveAs(blob, "bulk_template.csv");
   }
 
-  function clearLastBulk(){
-    setBulkCreated([])
-    try{ localStorage.removeItem(LS_BULK) }catch{}
+  function clearLastBulk() {
+    setBulkCreated([]);
+    try {
+      localStorage.removeItem(LS_BULK);
+    } catch {}
   }
 
-  // ===== UI =====
+  /** ========== UI ========== **/
   return (
     <div className="grid">
       <div className="card">
         <div className="hd">
           <b>Manufacture</b>
           <div className="row">
-            <button className={`btn ghost ${tab==='single'?'active':''}`} onClick={()=>setTab('single')}>Single</button>
-            <button className={`btn ghost ${tab==='bulk'?'active':''}`} onClick={()=>setTab('bulk')}>Bulk</button>
+            <button
+              className={`btn ghost ${tab === "single" ? "active" : ""}`}
+              onClick={() => setTab("single")}
+            >
+              Single
+            </button>
+            <button
+              className={`btn ghost ${tab === "bulk" ? "active" : ""}`}
+              onClick={() => setTab("bulk")}
+            >
+              Bulk
+            </button>
           </div>
         </div>
 
         <div className="bd">
-          {tab==='single' && (
+          {/* === SINGLE === */}
+          {tab === "single" && (
             <>
-              <div className="row" style={{gap:8, alignItems:'center', flexWrap:'wrap'}}>
+              <div
+                className="row"
+                style={{ gap: 8, alignItems: "center", flexWrap: "wrap" }}
+              >
                 <AsyncFGSelect
                   value={fgId}
-                  onChange={(id, item)=>{ setFgId(String(id||'')); setFgName(item?.name||'') }}
+                  onChange={(id, item) => {
+                    setFgId(String(id || ""));
+                    setFgName(item?.name || "");
+                  }}
                   placeholder="Search finished goods…"
                   minChars={1}
                   pageSize={25}
                 />
-                <input type="number" min="1" value={qty} onChange={e=>setQty(e.target.value)} style={{width:140}} placeholder="Qty (units)" />
-                <button className="btn" onClick={manufactureOnce} disabled={making || !fgId || Number(qty)<=0}>
-                  {making ? 'Manufacturing…' : 'Create Packets'}
+                <input
+                  type="number"
+                  min="1"
+                  value={qty}
+                  onChange={(e) => setQty(e.target.value)}
+                  style={{ width: 140 }}
+                  placeholder="Qty (units)"
+                />
+                <button
+                  className="btn"
+                  onClick={manufactureOnce}
+                  disabled={making || !fgId || Number(qty) <= 0}
+                >
+                  {making ? "Manufacturing…" : "Create Packets"}
                 </button>
-                <button className="btn outline" onClick={openLabelsSingle} disabled={!singleCreated.length}>
+                <button
+                  className="btn outline"
+                  onClick={openLabelsSingle}
+                  disabled={!singleCreated.length}
+                >
                   Open Labels (2-up PDF)
                 </button>
-                <button className="btn" onClick={printLabelsSingle} disabled={!singleCreated.length}>
+                <button
+                  className="btn"
+                  onClick={printLabelsSingle}
+                  disabled={!singleCreated.length}
+                >
                   🖨️ Print Labels (2-up)
                 </button>
-                <button className="btn ghost" onClick={clearLastSingle} disabled={!singleCreated.length}>
+                <button
+                  className="btn ghost"
+                  onClick={clearLastSingle}
+                  disabled={!singleCreated.length}
+                >
                   Clear Last
                 </button>
               </div>
 
               {!!lastBatch && (
-                <div className="row" style={{marginTop:6, gap:8}}>
+                <div className="row" style={{ marginTop: 6, gap: 8 }}>
                   <span className="badge">Batch: {lastBatch.batch_id}</span>
-                  <span className="badge">Packets: {lastBatch.packets_created}</span>
+                  <span className="badge">
+                    Packets: {lastBatch.packets_created}
+                  </span>
                 </div>
               )}
 
-              <div className="card" style={{marginTop:10}}>
+              <div className="card" style={{ marginTop: 10 }}>
                 <div className="hd">
                   <b>Last Run Preview (Single)</b>
-                  <span className="badge">{singleCreated.length ? `${singleCreated.length} packets` : 'None'}</span>
+                  <span className="badge">
+                    {singleCreated.length
+                      ? `${singleCreated.length} packets`
+                      : "None"}
+                  </span>
                 </div>
                 <div className="bd">
-                  {!singleCreated.length && <div className="badge">No single manufacture yet</div>}
+                  {!singleCreated.length && (
+                    <div className="badge">No single manufacture yet</div>
+                  )}
                   {!!singleCreated.length && (
-                    <div className="grid" style={{gridTemplateColumns:'repeat(auto-fill,minmax(240px,1fr))'}}>
-                      {singleCreated.map(x=>(
+                    <div
+                      className="grid"
+                      style={{
+                        gridTemplateColumns:
+                          "repeat(auto-fill,minmax(240px,1fr))",
+                      }}
+                    >
+                      {singleCreated.map((x) => (
                         <div key={x.code} className="card">
                           <div className="bd">
-                            <div style={{fontWeight:600}}>{x.name || fgName || '—'}</div>
-                            <code style={{fontFamily:'monospace', wordBreak:'break-all'}}>{x.code}</code>
+                            <div style={{ fontWeight: 600 }}>
+                              {x.name || fgName || "—"}
+                            </div>
+                            <code
+                              style={{
+                                fontFamily: "monospace",
+                                wordBreak: "break-all",
+                              }}
+                            >
+                              {x.code}
+                            </code>
                           </div>
                         </div>
                       ))}
@@ -260,20 +438,44 @@ export default function ManufacturePage(){
             </>
           )}
 
-          {tab==='bulk' && (
+          {/* === BULK === */}
+          {tab === "bulk" && (
             <>
-              <div className="row" style={{gap:8, alignItems:'center', flexWrap:'wrap'}}>
-                <input type="file" accept=".xlsx,.xls,.csv" onChange={onFile}/>
-                <button className="btn" onClick={runBulk} disabled={bulkLoading || !rows.length}>
-                  {bulkLoading ? 'Working…' : 'Create Batches'}
+              <div
+                className="row"
+                style={{ gap: 8, alignItems: "center", flexWrap: "wrap" }}
+              >
+                <input
+                  type="file"
+                  accept=".xlsx,.xls,.csv"
+                  onChange={onFile}
+                />
+                <button
+                  className="btn"
+                  onClick={runBulk}
+                  disabled={bulkLoading || !rows.length}
+                >
+                  {bulkLoading ? "Working…" : "Create Batches"}
                 </button>
-                <button className="btn outline" onClick={openLabelsBulk} disabled={!bulkCreated.length}>
+                <button
+                  className="btn outline"
+                  onClick={openLabelsBulk}
+                  disabled={!bulkCreated.length}
+                >
                   Open Labels (2-up PDF)
                 </button>
-                <button className="btn" onClick={printLabelsBulk} disabled={!bulkCreated.length}>
+                <button
+                  className="btn"
+                  onClick={printLabelsBulk}
+                  disabled={!bulkCreated.length}
+                >
                   🖨️ Print Labels (2-up)
                 </button>
-                <button className="btn ghost" onClick={clearLastBulk} disabled={!bulkCreated.length}>
+                <button
+                  className="btn ghost"
+                  onClick={clearLastBulk}
+                  disabled={!bulkCreated.length}
+                >
                   Clear Last
                 </button>
                 <button className="btn ghost" onClick={downloadTemplateCSV}>
@@ -281,25 +483,44 @@ export default function ManufacturePage(){
                 </button>
               </div>
 
-              <div className="s" style={{color:'var(--muted)', marginTop:6}}>
+              <div className="s" style={{ color: "var(--muted)", marginTop: 6 }}>
                 Columns required: <code>finished_good</code>, <code>qty</code>.  
-                Upload this same format for your grocery manufacturing batches.
+                Upload this same format for your manufacturing batches.
               </div>
 
-              <div className="card" style={{marginTop:10}}>
+              <div className="card" style={{ marginTop: 10 }}>
                 <div className="hd">
                   <b>Last Upload Preview (Bulk)</b>
-                  <span className="badge">{bulkCreated.length ? `${bulkCreated.length} packets` : 'None'}</span>
+                  <span className="badge">
+                    {bulkCreated.length
+                      ? `${bulkCreated.length} packets`
+                      : "None"}
+                  </span>
                 </div>
                 <div className="bd">
-                  {!bulkCreated.length && <div className="badge">No bulk upload yet</div>}
+                  {!bulkCreated.length && (
+                    <div className="badge">No bulk upload yet</div>
+                  )}
                   {!!bulkCreated.length && (
-                    <div className="grid" style={{gridTemplateColumns:'repeat(auto-fill,minmax(240px,1fr))'}}>
-                      {bulkCreated.map(x=>(
+                    <div
+                      className="grid"
+                      style={{
+                        gridTemplateColumns:
+                          "repeat(auto-fill,minmax(240px,1fr))",
+                      }}
+                    >
+                      {bulkCreated.map((x) => (
                         <div key={x.code} className="card">
                           <div className="bd">
-                            <div style={{fontWeight:600}}>{x.name}</div>
-                            <code style={{fontFamily:'monospace', wordBreak:'break-all'}}>{x.code}</code>
+                            <div style={{ fontWeight: 600 }}>{x.name}</div>
+                            <code
+                              style={{
+                                fontFamily: "monospace",
+                                wordBreak: "break-all",
+                              }}
+                            >
+                              {x.code}
+                            </code>
                           </div>
                         </div>
                       ))}
@@ -312,5 +533,5 @@ export default function ManufacturePage(){
         </div>
       </div>
     </div>
-  )
+  );
 }
