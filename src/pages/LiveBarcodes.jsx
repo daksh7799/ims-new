@@ -7,28 +7,27 @@ function fmtDate(d) {
   if (!d) return "—";
   const t = typeof d === "string" ? Date.parse(d) : d;
   if (Number.isNaN(t)) return "—";
-  return new Date(t).toLocaleString();
+  return new Date(t).toLocaleString(); // ✅ Browser auto IST
 }
 
 export default function LiveBarcodes() {
-  const [rows, setRows] = useState([]); // data from view
+  const [rows, setRows] = useState([]);
   const [q, setQ] = useState("");
   const [onlyNoBarcode, setOnlyNoBarcode] = useState(false);
+  const [fromDate, setFromDate] = useState("");
+  const [toDate, setToDate] = useState("");
   const [loading, setLoading] = useState(true);
   const [err, setErr] = useState("");
   const [selected, setSelected] = useState(() => new Set());
   const navigate = useNavigate();
 
-  /** -------------------- LOAD BAR CODES -------------------- **/
+  /** -------------------- LOAD -------------------- **/
   async function load() {
     setLoading(true);
     setErr("");
     const { data, error } = await supabase
       .from("v_live_barcodes_enriched")
-      .select(
-        "id, packet_code, finished_good_name, bin_code, status, returned_at, produced_at, is_no_barcode_return"
-      )
-      // ✅ fetch only barcodes with status available OR returned
+      .select("*")
       .in("status", ["available", "returned"])
       .order("id", { ascending: false });
 
@@ -43,42 +42,44 @@ export default function LiveBarcodes() {
     setSelected(new Set());
   }
 
-  /** -------------------- AUTO + REALTIME REFRESH -------------------- **/
+  /** -------------------- RELTIME + REFRESH -------------------- **/
   useEffect(() => {
     load();
-
-    // refresh every 30 s
     const timer = setInterval(load, 30_000);
-
-    // realtime triggers on DB changes
-    const ch1 = supabase
-      .channel("rt:packets")
-      .on("postgres_changes", { event: "*", schema: "public", table: "packets" }, load);
-    const ch2 = supabase
-      .channel("rt:putaway")
-      .on("postgres_changes", { event: "*", schema: "public", table: "packet_putaway" }, load);
-    const ch3 = supabase
-      .channel("rt:ledger")
-      .on("postgres_changes", { event: "*", schema: "public", table: "stock_ledger" }, load);
-
-    ch1.subscribe();
-    ch2.subscribe();
-    ch3.subscribe();
+    const c1 = supabase.channel("rt:packets")
+      .on("postgres_changes", { event: "*", schema: "public", table: "packets" }, load)
+      .subscribe();
+    const c2 = supabase.channel("rt:ledger")
+      .on("postgres_changes", { event: "*", schema: "public", table: "stock_ledger" }, load)
+      .subscribe();
 
     return () => {
       clearInterval(timer);
-      try { supabase.removeChannel(ch1); } catch {}
-      try { supabase.removeChannel(ch2); } catch {}
-      try { supabase.removeChannel(ch3); } catch {}
+      try { supabase.removeChannel(c1); } catch {}
+      try { supabase.removeChannel(c2); } catch {}
     };
-    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
-  /** -------------------- FILTER -------------------- **/
+  /** -------------------- FILTERING -------------------- **/
   const filtered = useMemo(() => {
     const qq = q.trim().toLowerCase();
+
     return (rows || []).filter((r) => {
       if (onlyNoBarcode && !r.is_no_barcode_return) return false;
+
+      const pd = r.produced_at ? new Date(r.produced_at) : null;
+
+      // ✅ Date filtering only when user selects any filter
+      if (fromDate) {
+        const f = new Date(fromDate);
+        if (!pd || pd < f) return false;
+      }
+      if (toDate) {
+        const t = new Date(toDate);
+        t.setHours(23, 59, 59, 999);
+        if (!pd || pd > t) return false;
+      }
+
       return (
         !qq ||
         r.packet_code?.toLowerCase().includes(qq) ||
@@ -86,14 +87,14 @@ export default function LiveBarcodes() {
         (r.bin_code || "").toLowerCase().includes(qq)
       );
     });
-  }, [rows, q, onlyNoBarcode]);
+  }, [rows, q, onlyNoBarcode, fromDate, toDate]);
 
-  /** -------------------- SELECTION -------------------- **/
   const allVisibleSelected =
     filtered.length > 0 && filtered.every((r) => selected.has(r.packet_code));
   const someVisibleSelected =
     filtered.some((r) => selected.has(r.packet_code)) && !allVisibleSelected;
 
+  /** -------------------- SELECTOR -------------------- **/
   function toggleRow(code, checked) {
     setSelected((prev) => {
       const next = new Set(prev);
@@ -104,70 +105,51 @@ export default function LiveBarcodes() {
   }
 
   function toggleVisible(checked) {
-    setSelected((prev) => {
-      const next = new Set(prev);
-      if (checked) filtered.forEach((r) => next.add(r.packet_code));
-      else filtered.forEach((r) => next.delete(r.packet_code));
-      return next;
-    });
+    const next = new Set(selected);
+    if (checked) filtered.forEach((r) => next.add(r.packet_code));
+    else filtered.forEach((r) => next.delete(r.packet_code));
+    setSelected(next);
   }
 
-  /** -------------------- EXPORTS -------------------- **/
+  /** -------------------- CLEAR FILTER -------------------- **/
+  function clearFilters() {
+    setQ("");
+    setFromDate("");
+    setToDate("");
+    setOnlyNoBarcode(false);
+  }
+
+  /** -------------------- EXPORT / PRINT -------------------- **/
   function exportRows() {
     const data = filtered.map((r) => ({
       barcode: r.packet_code,
       item: r.finished_good_name,
-      bin: r.bin_code || "-",
+      bin: r.bin_code,
       status: r.status,
-      no_barcode_return: r.is_no_barcode_return ? "Yes" : "No",
-      returned_at: r.returned_at || "",
-      produced_at: r.produced_at || "",
+      returned_at: fmtDate(r.returned_at),
+      produced_at: fmtDate(r.produced_at),
     }));
     downloadCSV("live_barcodes.csv", data);
   }
 
-  /** -------------------- LABEL DOWNLOAD -------------------- **/
   function downloadSelected() {
     const chosen = filtered.filter((r) => selected.has(r.packet_code));
-    if (!chosen.length) {
-      alert("Select at least one barcode.");
-      return;
-    }
+    if (!chosen.length) return alert("Select barcodes first");
     const codes = chosen.map((r) => r.packet_code);
     const namesByCode = Object.fromEntries(
       chosen.map((r) => [r.packet_code, r.finished_good_name || ""])
     );
-    navigate("/labels", {
-      state: {
-        title:
-          chosen.length === 1 ? chosen[0].finished_good_name : "Selected Labels",
-        codes,
-        namesByCode,
-        mode: "download",
-      },
-    });
+    navigate("/labels", { state: { codes, namesByCode, mode: "download" } });
   }
 
-  /** -------------------- DIRECT PRINT -------------------- **/
   function printSelected() {
     const chosen = filtered.filter((r) => selected.has(r.packet_code));
-    if (!chosen.length) {
-      alert("Select at least one barcode.");
-      return;
-    }
+    if (!chosen.length) return alert("Select barcodes first");
     const codes = chosen.map((r) => r.packet_code);
     const namesByCode = Object.fromEntries(
       chosen.map((r) => [r.packet_code, r.finished_good_name || ""])
     );
-    navigate("/labels", {
-      state: {
-        title:
-          chosen.length === 1 ? chosen[0].finished_good_name : "Selected Labels",
-        codes,
-        namesByCode,
-        mode: "print",
-      },
-    });
+    navigate("/labels", { state: { codes, namesByCode, mode: "print" } });
   }
 
   /** -------------------- UI -------------------- **/
@@ -176,47 +158,66 @@ export default function LiveBarcodes() {
       <div className="card">
         <div className="hd">
           <b>Live Barcodes</b>
-          <div className="row" style={{ gap: 8 }}>
+
+          {/* ✅ Filter Controls */}
+          <div className="row" style={{ gap: 8, flexWrap: "wrap" }}>
             <input
               placeholder="Search barcode / item / bin…"
               value={q}
               onChange={(e) => setQ(e.target.value)}
-              style={{ minWidth: 280 }}
+              style={{ minWidth: 240 }}
             />
+
+            <input
+              type="datetime-local"
+              value={fromDate}
+              onChange={(e) => setFromDate(e.target.value)}
+            />
+            <input
+              type="datetime-local"
+              value={toDate}
+              onChange={(e) => setToDate(e.target.value)}
+            />
+
             <label className="row" style={{ gap: 6 }}>
               <input
                 type="checkbox"
                 checked={onlyNoBarcode}
                 onChange={(e) => setOnlyNoBarcode(e.target.checked)}
               />
-              Show only “No-Barcode Returns”
+              No-Barcode Returns
             </label>
+
+            <button className="btn ghost" onClick={clearFilters}>
+              Clear Filters
+            </button>
+
             <button className="btn outline" onClick={exportRows} disabled={loading}>
               Export CSV
             </button>
+
             <button
               className="btn"
               onClick={downloadSelected}
-              disabled={[...selected].length === 0}
+              disabled={!selected.size}
             >
-              Download Selected Labels
+              Download Selected
             </button>
+
             <button
               className="btn ok"
               onClick={printSelected}
-              disabled={[...selected].length === 0}
+              disabled={!selected.size}
             >
               🖨️ Print
             </button>
           </div>
         </div>
 
+        {/* ✅ TABLE */}
         <div className="bd" style={{ overflow: "auto" }}>
-          {!!err && (
-            <div className="badge err" style={{ marginBottom: 8 }}>
-              {err}
-            </div>
-          )}
+          {!!err && <div className="badge err">{err}</div>}
+
           <table className="table">
             <thead>
               <tr>
@@ -224,9 +225,7 @@ export default function LiveBarcodes() {
                   <input
                     type="checkbox"
                     checked={allVisibleSelected}
-                    ref={(el) => {
-                      if (el) el.indeterminate = someVisibleSelected;
-                    }}
+                    ref={(el) => el && (el.indeterminate = someVisibleSelected)}
                     onChange={(e) => toggleVisible(e.target.checked)}
                   />
                 </th>
@@ -234,9 +233,9 @@ export default function LiveBarcodes() {
                 <th>Item</th>
                 <th>Bin</th>
                 <th>Status</th>
-                <th>No-Barcode Return</th>
-                <th>Returned At</th>
-                <th>Produced At</th>
+                <th>No-Barcode</th>
+                <th>Returned</th>
+                <th>Produced</th>
               </tr>
             </thead>
             <tbody>
@@ -258,10 +257,11 @@ export default function LiveBarcodes() {
                   <td>{fmtDate(r.produced_at)}</td>
                 </tr>
               ))}
+
               {filtered.length === 0 && (
                 <tr>
                   <td colSpan={8} style={{ color: "var(--muted)" }}>
-                    {loading ? "Loading…" : "No barcodes"}
+                    {loading ? "Loading…" : "No barcodes found"}
                   </td>
                 </tr>
               )}
