@@ -33,36 +33,36 @@ import SOAdmin from './pages/SOAdmin.jsx'
 import RawProcess from './pages/RawProcess.jsx'   // 👈 NEW MODULE
 
 const LINKS = [
-  { key:'dashboard', path:'/',                   label:'Dashboard', end:true },
-  { key:'raw',       path:'/raw',                label:'Raw Inward' },
-  { key:'bom',       path:'/bom',                label:'BOM' },
-  { key:'mfg',       path:'/mfg',                label:'Manufacture' },
-  { key:'live',      path:'/live',               label:'Live Barcodes' },
-  { key:'putaway',   path:'/putaway',            label:'Bins (Putaway)' },
-  { key:'bin-inv',   path:'/bin-inv',            label:'Bin Inventory' },
-  { key:'sales',     path:'/sales',              label:'Sales Orders' },
-  { key:'outward',   path:'/outward',            label:'Outward (SO Clearing)' },
-  { key:'returns',   path:'/returns',            label:'Returns' },
-  { key:'inv-rm',    path:'/inv-rm',             label:'RM Inventory' },
-  { key:'inv-fg',    path:'/inv-fg',             label:'FG Inventory' },
-  { key:'blends',    path:'/blends',             label:'Blend Recipes' },
-  { key:'blend-mfg', path:'/blend-manufacture',  label:'Blend Manufacture' },
+  { key: 'dashboard', path: '/', label: 'Dashboard', end: true },
+  { key: 'raw', path: '/raw', label: 'Raw Inward' },
+  { key: 'bom', path: '/bom', label: 'BOM' },
+  { key: 'mfg', path: '/mfg', label: 'Manufacture' },
+  { key: 'live', path: '/live', label: 'Live Barcodes' },
+  { key: 'putaway', path: '/putaway', label: 'Bins (Putaway)' },
+  { key: 'bin-inv', path: '/bin-inv', label: 'Bin Inventory' },
+  { key: 'sales', path: '/sales', label: 'Sales Orders' },
+  { key: 'outward', path: '/outward', label: 'Outward (SO Clearing)' },
+  { key: 'returns', path: '/returns', label: 'Returns' },
+  { key: 'inv-rm', path: '/inv-rm', label: 'RM Inventory' },
+  { key: 'inv-fg', path: '/inv-fg', label: 'FG Inventory' },
+  { key: 'blends', path: '/blends', label: 'Blend Recipes' },
+  { key: 'blend-mfg', path: '/blend-manufacture', label: 'Blend Manufacture' },
 
   // utilities
-  { key:'trace',     path:'/trace',              label:'Packet Trace' },
-  { key:'raw-adjust',path:'/raw-adjust',         label:'Raw Adjust' },
-  { key:'so-admin',  path:'/so-admin',           label:'SO Admin' },
-  { key:'raw-process',path:'/raw-process',       label:'Raw Process' }, // 👈 ADDED HERE
+  { key: 'trace', path: '/trace', label: 'Packet Trace' },
+  { key: 'raw-adjust', path: '/raw-adjust', label: 'Raw Adjust' },
+  { key: 'so-admin', path: '/so-admin', label: 'SO Admin' },
+  { key: 'raw-process', path: '/raw-process', label: 'Raw Process' }, // 👈 Added here
 
   // admin
-  { key:'masters',   path:'/masters',            label:'Masters' },
-  { key:'admin',     path:'/admin',              label:'Admin' },
+  { key: 'masters', path: '/masters', label: 'Masters' },
+  { key: 'admin', path: '/admin', label: 'Admin' },
 ]
 
-export default function App(){
+export default function App() {
   const { session, profile, loading } = useSessionProfile()
 
-  if (loading) return <div className="s" style={{ padding:20 }}>Loading…</div>
+  if (loading) return <div className="s" style={{ padding: 20 }}>Loading…</div>
   if (!session) return <Login />
 
   const allowed = new Set(profile?.allowed_modules || [])
@@ -83,7 +83,7 @@ export default function App(){
             ))}
           </nav>
 
-          <div style={{ marginTop:'auto', display:'grid', gap:8 }}>
+          <div style={{ marginTop: 'auto', display: 'grid', gap: 8 }}>
             <div className="s">{profile?.full_name || session.user.email}</div>
             <span className="badge">{profile?.role || 'viewer'}</span>
             <button
@@ -98,35 +98,35 @@ export default function App(){
 
         <main>
           <Routes>
-            {/* keep Labels route public (used by LiveBarcodes etc.) */}
+            {/* Keep Labels route public (used by LiveBarcodes etc.) */}
             <Route path="/labels" element={<Labels />} />
 
-            {/* visible pages (only mount if link is visible) */}
+            {/* Visible pages (only mount if link is visible) */}
             {canSee('dashboard') && <Route path="/" element={<Dashboard />} />}
-            {canSee('raw')       && <Route path="/raw" element={<RawInward />} />}
-            {canSee('bom')       && <Route path="/bom" element={<BOM />} />}
-            {canSee('mfg')       && <Route path="/mfg" element={<Manufacture />} />}
-            {canSee('live')      && <Route path="/live" element={<LiveBarcodes />} />}
-            {canSee('putaway')   && <Route path="/putaway" element={<Putaway />} />}
-            {canSee('bin-inv')   && <Route path="/bin-inv" element={<BinInventory />} />}
-            {canSee('sales')     && <Route path="/sales" element={<SalesOrders />} />}
-            {canSee('outward')   && <Route path="/outward" element={<Outward />} />}
-            {canSee('returns')   && <Route path="/returns" element={<Returns />} />}
-            {canSee('inv-rm')    && <Route path="/inv-rm" element={<RMInventory />} />}
-            {canSee('inv-fg')    && <Route path="/inv-fg" element={<FGInventory />} />}
-            {canSee('blends')    && <Route path="/blends" element={<BlendRecipes />} />}
+            {canSee('raw') && <Route path="/raw" element={<RawInward />} />}
+            {canSee('bom') && <Route path="/bom" element={<BOM />} />}
+            {canSee('mfg') && <Route path="/mfg" element={<Manufacture />} />}
+            {canSee('live') && <Route path="/live" element={<LiveBarcodes />} />}
+            {canSee('putaway') && <Route path="/putaway" element={<Putaway />} />}
+            {canSee('bin-inv') && <Route path="/bin-inv" element={<BinInventory />} />}
+            {canSee('sales') && <Route path="/sales" element={<SalesOrders />} />}
+            {canSee('outward') && <Route path="/outward" element={<Outward />} />}
+            {canSee('returns') && <Route path="/returns" element={<Returns />} />}
+            {canSee('inv-rm') && <Route path="/inv-rm" element={<RMInventory />} />}
+            {canSee('inv-fg') && <Route path="/inv-fg" element={<FGInventory />} />}
+            {canSee('blends') && <Route path="/blends" element={<BlendRecipes />} />}
             {canSee('blend-mfg') && <Route path="/blend-manufacture" element={<BlendManufacture />} />}
 
-            {canSee('trace')     && <Route path="/trace" element={<PacketTrace />} />}
-            {canSee('raw-adjust')&& <Route path="/raw-adjust" element={<RawAdjust />} />}
-            {canSee('so-admin')  && <Route path="/so-admin" element={<SOAdmin />} />}
-            {canSee('raw-process')&&<Route path="/raw-process" element={<RawProcess />} />} {/* 👈 ROUTE */}
+            {canSee('trace') && <Route path="/trace" element={<PacketTrace />} />}
+            {canSee('raw-adjust') && <Route path="/raw-adjust" element={<RawAdjust />} />}
+            {canSee('so-admin') && <Route path="/so-admin" element={<SOAdmin />} />}
+            {canSee('raw-process') && <Route path="/raw-process" element={<RawProcess />} />} {/* 👈 Route added */}
 
-            {canSee('masters')   && <Route path="/masters" element={<AdminMasters />} />}
-            {canSee('admin')     && <Route path="/admin" element={<AdminUsers />} />}
+            {canSee('masters') && <Route path="/masters" element={<AdminMasters />} />}
+            {canSee('admin') && <Route path="/admin" element={<AdminUsers />} />}
 
             {/* fallback */}
-            <Route path="*" element={<div style={{padding:20}}>Not found or access denied.</div>} />
+            <Route path="*" element={<div style={{ padding: 20 }}>Not found or access denied.</div>} />
           </Routes>
         </main>
       </div>
