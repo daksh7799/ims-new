@@ -1,3 +1,4 @@
+// src/pages/RMInventory.jsx
 import { useEffect, useMemo, useState } from 'react'
 import { supabase } from '../supabaseClient'
 import { downloadCSV } from '../utils/csv'
@@ -14,7 +15,8 @@ export default function RMInventory() {
     const { data, error } = await supabase
       .from('v_raw_inventory')
       .select('*')
-      .order('raw_material_name') // ✅ changed
+      .order('raw_material_name')
+
     if (error) {
       alert(error.message)
       setLoading(false)
@@ -32,23 +34,26 @@ export default function RMInventory() {
     return (rows || []).filter(r => {
       const matchQ =
         !qq ||
-        String(r.raw_material_name || '').toLowerCase().includes(qq) || // ✅ changed
+        String(r.raw_material_name || '').toLowerCase().includes(qq) ||
         String(r.unit || '').toLowerCase().includes(qq)
       const qty = Number(r.qty_on_hand || 0)
       return matchQ && qty >= min && qty <= max
     })
   }, [rows, q, minQty, maxQty])
 
-  const lowCount = filtered.filter(
-    r => r.low_threshold && Number(r.qty_on_hand) <= Number(r.low_threshold)
-  ).length
+  // ✅ Low count based on backend threshold
+  const lowCount = filtered.filter(r => {
+    const qty = Number(r.qty_on_hand || 0)
+    const thr = Number(r.low_threshold ?? 0)
+    return thr > 0 && qty <= thr
+  }).length
 
   function exportCSV() {
     downloadCSV(
       'rm_inventory.csv',
       filtered.map(r => ({
         id: r.id,
-        raw_material_name: r.raw_material_name, // ✅ changed
+        raw_material_name: r.raw_material_name,
         unit: r.unit || '',
         qty_on_hand: r.qty_on_hand,
         low_threshold: r.low_threshold || ''
@@ -85,18 +90,10 @@ export default function RMInventory() {
               onChange={e => setMaxQty(e.target.value)}
               style={{ width: 110 }}
             />
-            <button
-              className="btn ghost"
-              onClick={load}
-              disabled={loading}
-            >
+            <button className="btn ghost" onClick={load} disabled={loading}>
               {loading ? 'Refreshing…' : 'Refresh'}
             </button>
-            <button
-              className="btn"
-              onClick={exportCSV}
-              disabled={!filtered.length}
-            >
+            <button className="btn" onClick={exportCSV} disabled={!filtered.length}>
               Export CSV
             </button>
           </div>
@@ -106,7 +103,7 @@ export default function RMInventory() {
             <span className="badge">Low: {lowCount}</span>
           </div>
 
-          {/* Table */}
+          {/* 📦 Table */}
           <table className="table">
             <thead>
               <tr>
@@ -120,11 +117,24 @@ export default function RMInventory() {
             <tbody>
               {filtered.map(r => {
                 const qty = Number(r.qty_on_hand || 0)
-                const thr = Number(r.low_threshold || 0)
-                const low = thr > 0 && qty <= thr
+                const thr = Number(r.low_threshold ?? 0)
+
+                let status = 'No threshold'
+                let color = 'var(--muted)'
+
+                if (thr > 0) {
+                  if (qty <= thr) {
+                    status = 'Low'
+                    color = 'var(--err)'
+                  } else {
+                    status = 'OK'
+                    color = 'var(--ok)'
+                  }
+                }
+
                 return (
                   <tr key={`rm-${r.id}`}>
-                    <td>{r.raw_material_name}</td> {/* ✅ changed */}
+                    <td>{r.raw_material_name}</td>
                     <td style={{ textAlign: 'right', fontWeight: 700 }}>{qty}</td>
                     <td style={{ textAlign: 'right' }}>{thr || '-'}</td>
                     <td>{r.unit || '-'}</td>
@@ -132,11 +142,11 @@ export default function RMInventory() {
                       <span
                         className="badge"
                         style={{
-                          borderColor: low ? 'var(--err)' : 'var(--border)',
-                          color: low ? 'var(--err)' : 'var(--muted)'
+                          borderColor: color,
+                          color: color,
                         }}
                       >
-                        {low ? 'Low' : 'OK'}
+                        {status}
                       </span>
                     </td>
                   </tr>
