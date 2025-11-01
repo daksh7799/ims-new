@@ -110,10 +110,8 @@ export default function Outward() {
 
     try {
       inFlight.current = true
-
-      // 🧩 Step 0 → Check barcode status first
       const { data: pktInfo, error: chkErr } = await supabase
-        .from('v_live_barcodes_enriched') // or 'packets' if that’s your main table
+        .from('v_live_barcodes_enriched')
         .select('id, packet_code, status')
         .eq('packet_code', pkt)
         .maybeSingle()
@@ -138,7 +136,6 @@ export default function Outward() {
         return
       }
 
-      // 🧩 Step 1 → Allocate packet to order
       const { error: allocErr } = await supabase.rpc('allocate_packet_to_order', {
         p_so_id: Number(soId),
         p_packet_code: pkt
@@ -153,7 +150,6 @@ export default function Outward() {
         return
       }
 
-      // 🧩 Step 2 → Outward packet (updates stock_ledger + packet status)
       const { data, error: outErr } = await supabase.rpc('packet_outward_scan', {
         p_packet_code: pkt,
         p_note: `Outwarded for SO ${soId}`
@@ -260,6 +256,44 @@ export default function Outward() {
 
   useEffect(() => { loadBinsForCurrentLines() }, [JSON.stringify(lines)])
 
+  /** -------------------- PRINT FEATURE -------------------- **/
+  async function printSO() {
+    if (!orderHdr) return alert('No order selected')
+    try {
+      const [{ default: jsPDF }, { default: autoTable }] = await Promise.all([
+        import('jspdf'),
+        import('jspdf-autotable')
+      ])
+
+      const doc = new jsPDF()
+      doc.setFontSize(14)
+      doc.text(`Sales Order ${orderHdr.so_number || soId}`, 14, 16)
+      doc.setFontSize(11)
+      doc.text(`Customer: ${orderHdr.customer_name || '-'}`, 14, 24)
+      if (orderHdr.created_at) doc.text(`Created: ${fmtDT(orderHdr.created_at)}`, 14, 31)
+      doc.text(`Shipped: ${totals.shipped}/${totals.ordered}`, 14, 38)
+
+      const body = (lines || []).map(l => {
+        const fg = l.finished_good_name || ''
+        const bins = binsByFg[norm(fg)] || []
+        const binsText = bins.length ? bins.map(b => `${b.bin_code}: ${b.qty}`).join(', ') : '—'
+        return [fg, `${Number(l.qty_shipped || 0)} / ${Number(l.qty_ordered || 0)}`, binsText]
+      })
+
+      autoTable(doc, {
+        startY: 45,
+        head: [['Finished Good', 'Shipped / Ordered', 'Bins']],
+        body,
+        styles: { fontSize: 10, cellPadding: 2 },
+        columnStyles: { 1: { halign: 'right', cellWidth: 35 } }
+      })
+
+      doc.save(`SO_${orderHdr.so_number || soId}.pdf`)
+    } catch (err) {
+      alert('Failed to print: ' + (err?.message || String(err)))
+    }
+  }
+
   /** -------------------- UI -------------------- **/
   return (
     <div className="grid">
@@ -282,6 +316,7 @@ export default function Outward() {
               {loadingOrders ? 'Refreshing…' : 'Refresh List'}
             </button>
             <Link to="/sales" className="btn outline">Open Sales Orders</Link>
+            {soId && <button className="btn outline" onClick={printSO}>🖨️ Print</button>}
           </div>
         </div>
         <div className="bd">
