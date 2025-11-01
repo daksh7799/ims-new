@@ -1,4 +1,3 @@
-// src/admin/AdminUsers.jsx
 import { useEffect, useMemo, useState } from 'react'
 import { supabase } from '../supabaseClient'
 
@@ -8,7 +7,7 @@ const ALL_MODULES = [
   'sales','outward','returns','inv-rm','inv-fg',
   'blends','blend-mfg',
   // utilities
-  'trace','raw-adjust','so-admin','raw-process', // ✅ Added raw-process here
+  'trace','raw-adjust','so-admin','raw-process','fg-sales', // ✅ Added fg-sales here
   // admin areas
   'masters','admin'
 ]
@@ -18,10 +17,10 @@ const PRESETS = {
   admin: ALL_MODULES,
   ops: [
     'dashboard','raw','live','putaway','bin-inv','sales','outward','returns',
-    'inv-rm','inv-fg','trace','raw-adjust','so-admin','raw-process' // ✅ Added raw-process in ops preset
+    'inv-rm','inv-fg','trace','raw-adjust','so-admin','raw-process','fg-sales' // ✅ Added fg-sales in ops preset
   ],
   picker: ['dashboard','outward','live','putaway','bin-inv','trace'],
-  viewer: ['dashboard','inv-rm','inv-fg']
+  viewer: ['dashboard','inv-rm','inv-fg','fg-sales'] // ✅ Viewers can also see FG Sales Report
 }
 
 export default function AdminUsers(){
