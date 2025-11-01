@@ -1,4 +1,3 @@
-// src/App.jsx
 import { BrowserRouter, Routes, Route, NavLink } from 'react-router-dom'
 import { supabase } from './supabaseClient'
 import useSessionProfile from './auth/useSessionProfile'
@@ -30,7 +29,8 @@ import AdminMasters from './pages/AdminMasters.jsx'
 import PacketTrace from './pages/PacketTrace.jsx'
 import RawAdjust from './pages/RawAdjust.jsx'
 import SOAdmin from './pages/SOAdmin.jsx'
-import RawProcess from './pages/RawProcess.jsx'   // 👈 NEW MODULE
+import RawProcess from './pages/RawProcess.jsx'
+import FgSalesReport from './pages/FgSalesReport.jsx'  // 👈 NEW MODULE
 
 const LINKS = [
   { key: 'dashboard', path: '/', label: 'Dashboard', end: true },
@@ -52,7 +52,8 @@ const LINKS = [
   { key: 'trace', path: '/trace', label: 'Packet Trace' },
   { key: 'raw-adjust', path: '/raw-adjust', label: 'Raw Adjust' },
   { key: 'so-admin', path: '/so-admin', label: 'SO Admin' },
-  { key: 'raw-process', path: '/raw-process', label: 'Raw Process' }, // 👈 Added here
+  { key: 'raw-process', path: '/raw-process', label: 'Raw Process' },
+  { key: 'fg-sales', path: '/fg-sales', label: 'FG Sales Report' }, // 👈 ADDED HERE
 
   // admin
   { key: 'masters', path: '/masters', label: 'Masters' },
@@ -120,7 +121,8 @@ export default function App() {
             {canSee('trace') && <Route path="/trace" element={<PacketTrace />} />}
             {canSee('raw-adjust') && <Route path="/raw-adjust" element={<RawAdjust />} />}
             {canSee('so-admin') && <Route path="/so-admin" element={<SOAdmin />} />}
-            {canSee('raw-process') && <Route path="/raw-process" element={<RawProcess />} />} {/* 👈 Route added */}
+            {canSee('raw-process') && <Route path="/raw-process" element={<RawProcess />} />}
+            {canSee('fg-sales') && <Route path="/fg-sales" element={<FgSalesReport />} />} {/* 👈 NEW ROUTE */}
 
             {canSee('masters') && <Route path="/masters" element={<AdminMasters />} />}
             {canSee('admin') && <Route path="/admin" element={<AdminUsers />} />}
