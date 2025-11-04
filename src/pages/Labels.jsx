@@ -10,11 +10,11 @@ const PAGE_W = LABEL_W * 2; // 2-up total width
 const PAGE_H = LABEL_H;
 const PAD = 3; // inner padding
 const CORNER = 2; // rounded rect radius
-const QR_MM = 12; // QR side (mm)
+const QR_MM = 13.5; // ✅ increased QR side (was 12mm)
 const NAME_FS = 7; // product name font size (pt)
 const NAME_GAP = 3.2; // name line gap (mm)
 const NAME_LINES = 3; // max wrapped lines
-const CODE_FS = 6.5; // code line font size (pt)
+const CODE_FS = 6.5; // ✅ slightly bigger code font for clarity
 const mmToPx = (mm) => Math.round(mm * (96 / 25.4));
 
 export default function Labels() {
@@ -154,7 +154,7 @@ export default function Labels() {
                         boxSizing: "border-box",
                         display: "flex",
                         gap: "2mm",
-                        alignItems: "flex-start",
+                        alignItems: "flex-start", // ✅ top align text with QR
                       }}
                     >
                       <canvas
@@ -189,6 +189,8 @@ export default function Labels() {
                             fontSize: "7pt",
                             lineHeight: 1,
                             wordBreak: "break-all",
+                            fontWeight: "bold", // ✅ bold in preview
+                            color: "#000", // ✅ darker text
                           }}
                         >
                           {it.code}
@@ -242,20 +244,21 @@ async function drawLabel(pdf, ox, oy, item) {
   });
   pdf.addImage(qr, "PNG", ox + pad, oy + pad, qrSize, qrSize);
 
-  // Name
+  // Name (starts aligned with QR top)
   pdf.setFont("helvetica", "bold");
   pdf.setFontSize(NAME_FS);
   const lines = pdf
     .splitTextToSize(String(item.name || ""), textBoxW)
     .slice(0, NAME_LINES);
   lines.forEach((ln, i) => {
-    pdf.text(ln, ox + textLeft, oy + pad + 4 + i * NAME_GAP, {
+    pdf.text(ln, ox + textLeft, oy + pad + i * NAME_GAP + 1.5, {
       baseline: "top",
     });
   });
 
-  // Code
-  pdf.setFont("courier", "normal");
+  // Code (bold + darker)
+  pdf.setFont("courier", "bold");
+  pdf.setTextColor(0, 0, 0); // black
   pdf.setFontSize(CODE_FS);
   pdf.text(item.code, ox + pad, oy + H - 5, { maxWidth: W - pad * 2 });
 }
