@@ -15,11 +15,11 @@ const ALL_MODULES = [
 // Optional quick presets for convenience
 const PRESETS = {
   admin: ALL_MODULES,
-  ops: [
-    'dashboard','raw','live','putaway','bin-inv','sales','outward','returns',
-    'inv-rm','inv-fg','trace','raw-adjust','so-admin','raw-process','fg-sales' // ✅ Added fg-sales in ops preset
+  picker: [
+    'dashboard','raw','live','putaway','bin-inv','mfg','outward','returns',
+    'inv-rm','inv-fg','trace','blend-mfg','raw-process','fg-sales' // ✅ Added fg-sales in ops preset
   ],
-  picker: ['dashboard','outward','live','putaway','bin-inv','trace'],
+  ops: ['dashboard','sales','trace'],
   viewer: ['dashboard','inv-rm','inv-fg','fg-sales'] // ✅ Viewers can also see FG Sales Report
 }
 
