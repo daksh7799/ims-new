@@ -13,7 +13,7 @@ const CORNER = 2; // rounded rect radius
 const QR_MM = 13; // ✅ increased QR side (was 12mm)
 const NAME_FS = 6.5; // product name font size (pt)
 const NAME_GAP = 3.2; // name line gap (mm)
-const NAME_LINES = 3; // max wrapped lines
+const NAME_LINES = 4; // max wrapped lines
 const CODE_FS = 6.5; // ✅ slightly bigger code font for clarity
 const mmToPx = (mm) => Math.round(mm * (96 / 25.4));
 
