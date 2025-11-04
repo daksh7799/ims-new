@@ -271,27 +271,56 @@ export default function Outward() {
       doc.setFontSize(11)
       doc.text(`Customer: ${orderHdr.customer_name || '-'}`, 14, 24)
       if (orderHdr.created_at) doc.text(`Created: ${fmtDT(orderHdr.created_at)}`, 14, 31)
-      doc.text(`Shipped: ${totals.shipped}/${totals.ordered}`, 14, 38)
+      doc.text(`Ordered: ${totals.ordered}`, 14, 38)
 
+      // ✅ changed: show Ordered (not Shipped / Ordered)
       const body = (lines || []).map(l => {
         const fg = l.finished_good_name || ''
         const bins = binsByFg[norm(fg)] || []
         const binsText = bins.length ? bins.map(b => `${b.bin_code}: ${b.qty}`).join(', ') : '—'
-        return [fg, `${Number(l.qty_shipped || 0)} / ${Number(l.qty_ordered || 0)}`, binsText]
+        return [
+          fg,
+          Number(l.qty_ordered || 0),   // ✅ ordered only
+          binsText
+        ]
       })
 
       autoTable(doc, {
         startY: 45,
-        head: [['Finished Good', 'Shipped / Ordered', 'Bins']],
+        head: [['Finished Good', 'Ordered', 'Bins']], // ✅ changed header
         body,
         styles: { fontSize: 10, cellPadding: 2 },
-        columnStyles: { 1: { halign: 'right', cellWidth: 35 } }
+        columnStyles: { 1: { halign: 'right', cellWidth: 25 } }
       })
 
       doc.save(`SO_${orderHdr.so_number || soId}.pdf`)
     } catch (err) {
       alert('Failed to print: ' + (err?.message || String(err)))
     }
+  }
+
+  /** -------------------- CSV DOWNLOAD (Finished Good, Ordered) -------------------- **/
+  function downloadSOAsCSV() {
+    if (!soId) {
+      alert('Pick an order first')
+      return
+    }
+    const header = ['finished_good', 'qty']
+    const rowsCsv = (lines || []).map(l => {
+      const fg = l.finished_good_name || ''
+      const ordered = Number(l.qty_ordered || 0)
+      // basic CSV escape
+      const safeFg = `"${fg.replace(/"/g, '""')}"`
+      return `${safeFg},${ordered}`
+    })
+    const csv = [header.join(','), ...rowsCsv].join('\n')
+    const blob = new Blob([csv], { type: 'text/csv;charset=utf-8;' })
+    const url = URL.createObjectURL(blob)
+    const a = document.createElement('a')
+    a.href = url
+    a.download = `SO_${orderHdr?.so_number || soId}.csv`
+    a.click()
+    URL.revokeObjectURL(url)
   }
 
   /** -------------------- UI -------------------- **/
@@ -316,7 +345,12 @@ export default function Outward() {
               {loadingOrders ? 'Refreshing…' : 'Refresh List'}
             </button>
             <Link to="/sales" className="btn outline">Open Sales Orders</Link>
-            {soId && <button className="btn outline" onClick={printSO}>🖨️ Print</button>}
+            {soId && (
+              <>
+                <button className="btn outline" onClick={printSO}>🖨️ Print</button>
+                <button className="btn outline" onClick={downloadSOAsCSV}>⬇️ CSV</button>
+              </>
+            )}
           </div>
         </div>
         <div className="bd">
