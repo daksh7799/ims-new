@@ -299,29 +299,46 @@ export default function Outward() {
     }
   }
 
-  /** -------------------- CSV DOWNLOAD (Finished Good, Ordered) -------------------- **/
-  function downloadSOAsCSV() {
-    if (!soId) {
-      alert('Pick an order first')
-      return
-    }
-    const header = ['finished_good', 'qty']
-    const rowsCsv = (lines || []).map(l => {
-      const fg = l.finished_good_name || ''
-      const ordered = Number(l.qty_ordered || 0)
-      // basic CSV escape
-      const safeFg = `"${fg.replace(/"/g, '""')}"`
-      return `${safeFg},${ordered}`
-    })
-    const csv = [header.join(','), ...rowsCsv].join('\n')
-    const blob = new Blob([csv], { type: 'text/csv;charset=utf-8;' })
-    const url = URL.createObjectURL(blob)
-    const a = document.createElement('a')
-    a.href = url
-    a.download = `SO_${orderHdr?.so_number || soId}.csv`
-    a.click()
-    URL.revokeObjectURL(url)
+  /** -------------------- CSV DOWNLOAD (Pending Finished Goods Only) -------------------- **/
+function downloadSOAsCSV() {
+  if (!soId) {
+    alert('Pick an order first')
+    return
   }
+
+  // Filter: only those not fully outwarded
+  const pendingLines = (lines || []).filter(l => {
+    const shipped = Number(l.qty_shipped || 0)
+    const ordered = Number(l.qty_ordered || 0)
+    return shipped < ordered // only pending
+  })
+
+  if (pendingLines.length === 0) {
+    alert('No pending finished goods — everything is outwarded.')
+    return
+  }
+
+  // Prepare CSV
+  const header = ['finished_good', 'qty']
+  const rowsCsv = pendingLines.map(l => {
+    const fg = l.finished_good_name || ''
+    const shipped = Number(l.qty_shipped || 0)
+    const ordered = Number(l.qty_ordered || 0)
+    const remaining = Math.max(ordered - shipped, 0)
+    const safeFg = `"${fg.replace(/"/g, '""')}"`
+    return `${safeFg},${remaining}`
+  })
+
+  const csv = [header.join(','), ...rowsCsv].join('\n')
+  const blob = new Blob([csv], { type: 'text/csv;charset=utf-8;' })
+  const url = URL.createObjectURL(blob)
+  const a = document.createElement('a')
+  a.href = url
+  a.download = `Pending_FG_${orderHdr?.so_number || soId}.csv`
+  a.click()
+  URL.revokeObjectURL(url)
+}
+
 
   /** -------------------- UI -------------------- **/
   return (
