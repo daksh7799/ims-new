@@ -10,14 +10,19 @@ function fmtDate(d) {
   return new Date(t).toLocaleString(); // ✅ Browser auto IST
 }
 
+const PAGE_SIZE = 1000;
+
 export default function LiveBarcodes() {
   const [rows, setRows] = useState([]);
+  const [totalCount, setTotalCount] = useState(0);
+  const [page, setPage] = useState(1);
+  const [loading, setLoading] = useState(true);
+  const [err, setErr] = useState("");
+
   const [q, setQ] = useState("");
   const [onlyNoBarcode, setOnlyNoBarcode] = useState(false);
   const [fromDate, setFromDate] = useState("");
   const [toDate, setToDate] = useState("");
-  const [loading, setLoading] = useState(true);
-  const [err, setErr] = useState("");
   const [selected, setSelected] = useState(() => new Set());
   const navigate = useNavigate();
 
@@ -25,21 +30,41 @@ export default function LiveBarcodes() {
   async function load() {
     setLoading(true);
     setErr("");
-    const { data, error } = await supabase
-      .from("v_live_barcodes_enriched")
-      .select("*")
-      .in("status", ["available", "returned"])
-      .order("id", { ascending: false });
+    try {
+      const from = (page - 1) * PAGE_SIZE;
+      const to = from + PAGE_SIZE - 1;
 
-    if (error) {
-      console.error(error);
-      setErr(error.message || String(error));
+      // First get total count
+      const { count } = await supabase
+        .from("v_live_barcodes_enriched")
+        .select("*", { count: "exact", head: true })
+        .in("status", ["available", "returned"]);
+
+      setTotalCount(count || 0);
+
+      // Then fetch page slice
+      const { data, error } = await supabase
+        .from("v_live_barcodes_enriched")
+        .select("*")
+        .in("status", ["available", "returned"])
+        .order("id", { ascending: false })
+        .range(from, to);
+
+      if (error) {
+        console.error(error);
+        setErr(error.message || String(error));
+        setRows([]);
+      } else {
+        setRows(data || []);
+      }
+    } catch (e) {
+      console.error(e);
+      setErr(String(e));
       setRows([]);
-    } else {
-      setRows(data || []);
+    } finally {
+      setLoading(false);
+      setSelected(new Set());
     }
-    setLoading(false);
-    setSelected(new Set());
   }
 
   /** -------------------- RELTIME + REFRESH -------------------- **/
@@ -58,7 +83,7 @@ export default function LiveBarcodes() {
       try { supabase.removeChannel(c1); } catch {}
       try { supabase.removeChannel(c2); } catch {}
     };
-  }, []);
+  }, [page]);
 
   /** -------------------- FILTERING -------------------- **/
   const filtered = useMemo(() => {
@@ -69,7 +94,6 @@ export default function LiveBarcodes() {
 
       const pd = r.produced_at ? new Date(r.produced_at) : null;
 
-      // ✅ Date filtering only when user selects any filter
       if (fromDate) {
         const f = new Date(fromDate);
         if (!pd || pd < f) return false;
@@ -153,6 +177,8 @@ export default function LiveBarcodes() {
   }
 
   /** -------------------- UI -------------------- **/
+  const totalPages = Math.ceil(totalCount / PAGE_SIZE) || 1;
+
   return (
     <div className="grid">
       <div className="card">
@@ -267,6 +293,27 @@ export default function LiveBarcodes() {
               )}
             </tbody>
           </table>
+        </div>
+
+        {/* ✅ Pagination */}
+        <div className="row" style={{ justifyContent: "center", marginTop: 12, gap: 10 }}>
+          <button
+            className="btn ghost"
+            onClick={() => setPage((p) => Math.max(1, p - 1))}
+            disabled={page === 1}
+          >
+            ← Prev
+          </button>
+          <span>
+            Page {page} / {totalPages} ({totalCount} total)
+          </span>
+          <button
+            className="btn ghost"
+            onClick={() => setPage((p) => Math.min(totalPages, p + 1))}
+            disabled={page >= totalPages}
+          >
+            Next →
+          </button>
         </div>
       </div>
     </div>
