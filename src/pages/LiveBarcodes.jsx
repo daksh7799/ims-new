@@ -3,14 +3,15 @@ import { supabase } from "../supabaseClient";
 import { downloadCSV } from "../utils/csv";
 import { useNavigate } from "react-router-dom";
 
+// Format date/time to local (IST)
 function fmtDate(d) {
   if (!d) return "—";
   const t = typeof d === "string" ? Date.parse(d) : d;
   if (Number.isNaN(t)) return "—";
-  return new Date(t).toLocaleString(); // ✅ Browser auto IST
+  return new Date(t).toLocaleString(); // auto local time (IST in browser)
 }
 
-const PAGE_SIZE = 1000;
+const PAGE_SIZE = 1000; // ✅ Show 1000 per page
 
 export default function LiveBarcodes() {
   const [rows, setRows] = useState([]);
@@ -34,7 +35,7 @@ export default function LiveBarcodes() {
       const from = (page - 1) * PAGE_SIZE;
       const to = from + PAGE_SIZE - 1;
 
-      // First get total count
+      // get total count first
       const { count } = await supabase
         .from("v_live_barcodes_enriched")
         .select("*", { count: "exact", head: true })
@@ -42,7 +43,7 @@ export default function LiveBarcodes() {
 
       setTotalCount(count || 0);
 
-      // Then fetch page slice
+      // fetch actual page slice
       const { data, error } = await supabase
         .from("v_live_barcodes_enriched")
         .select("*")
@@ -67,14 +68,18 @@ export default function LiveBarcodes() {
     }
   }
 
-  /** -------------------- RELTIME + REFRESH -------------------- **/
+  /** -------------------- REALTIME + REFRESH -------------------- **/
   useEffect(() => {
     load();
-    const timer = setInterval(load, 30_000);
-    const c1 = supabase.channel("rt:packets")
+    const timer = setInterval(load, 30_000); // auto refresh every 30s
+
+    const c1 = supabase
+      .channel("rt:packets")
       .on("postgres_changes", { event: "*", schema: "public", table: "packets" }, load)
       .subscribe();
-    const c2 = supabase.channel("rt:ledger")
+
+    const c2 = supabase
+      .channel("rt:ledger")
       .on("postgres_changes", { event: "*", schema: "public", table: "stock_ledger" }, load)
       .subscribe();
 
@@ -94,13 +99,14 @@ export default function LiveBarcodes() {
 
       const pd = r.produced_at ? new Date(r.produced_at) : null;
 
+      // ✅ Date-time filtering accurate to seconds
       if (fromDate) {
         const f = new Date(fromDate);
         if (!pd || pd < f) return false;
       }
       if (toDate) {
         const t = new Date(toDate);
-        t.setHours(23, 59, 59, 999);
+        // include up to the exact second
         if (!pd || pd > t) return false;
       }
 
@@ -113,12 +119,12 @@ export default function LiveBarcodes() {
     });
   }, [rows, q, onlyNoBarcode, fromDate, toDate]);
 
+  /** -------------------- SELECTION -------------------- **/
   const allVisibleSelected =
     filtered.length > 0 && filtered.every((r) => selected.has(r.packet_code));
   const someVisibleSelected =
     filtered.some((r) => selected.has(r.packet_code)) && !allVisibleSelected;
 
-  /** -------------------- SELECTOR -------------------- **/
   function toggleRow(code, checked) {
     setSelected((prev) => {
       const next = new Set(prev);
@@ -194,13 +200,16 @@ export default function LiveBarcodes() {
               style={{ minWidth: 240 }}
             />
 
+            {/* ✅ Date-time with seconds */}
             <input
               type="datetime-local"
+              step="1"
               value={fromDate}
               onChange={(e) => setFromDate(e.target.value)}
             />
             <input
               type="datetime-local"
+              step="1"
               value={toDate}
               onChange={(e) => setToDate(e.target.value)}
             />
@@ -296,7 +305,10 @@ export default function LiveBarcodes() {
         </div>
 
         {/* ✅ Pagination */}
-        <div className="row" style={{ justifyContent: "center", marginTop: 12, gap: 10 }}>
+        <div
+          className="row"
+          style={{ justifyContent: "center", marginTop: 12, gap: 10 }}
+        >
           <button
             className="btn ghost"
             onClick={() => setPage((p) => Math.max(1, p - 1))}
