@@ -1,4 +1,3 @@
-// src/pages/SalesOrders.jsx
 import { useEffect, useMemo, useState } from 'react'
 import { Link } from 'react-router-dom'
 import * as XLSX from 'xlsx'
@@ -153,7 +152,6 @@ export default function SalesOrders(){
     finally{ setImporting(false); e.target.value='' }
   }
 
-  // ✅ Download Sample CSV
   function downloadSampleCSV() {
     const headers = ['Finished Good', 'Qty']
     const csvContent = headers.join(',') + '\n'
@@ -180,6 +178,7 @@ export default function SalesOrders(){
     })))
   }
 
+  // ✅ Print stays open until user closes it
   async function printSO(order){
     try{
       const [{ default: jsPDF }, { default: autoTable }] = await Promise.all([
@@ -195,7 +194,10 @@ export default function SalesOrders(){
         doc.text(`Created: ${new Date(order.created_at).toLocaleString()}`, 14, 31)
       }
 
-      const { data: lines } = await supabase.from('v_so_lines').select('*').eq('sales_order_id', order.id)
+      const { data: lines } = await supabase
+        .from('v_so_lines')
+        .select('*')
+        .eq('sales_order_id', order.id)
       const fgNames = (lines||[]).map(l=>l.finished_good_name).filter(Boolean)
       const binsByFg = await getBinsForFgNames(fgNames)
 
@@ -205,22 +207,35 @@ export default function SalesOrders(){
         const binsText = bins.length
           ? bins.map(b => `${b.bin_code}: ${b.qty}`).join(', ')
           : '—'
-        return [
-          fgName,
-          `${Number(l.qty_shipped||0)} / ${Number(l.qty_ordered||0)}`,
-          binsText
-        ]
+        return [fgName, Number(l.qty_ordered||0), binsText]
       })
 
       autoTable(doc, {
         startY: 38,
-        head: [['Finished Good', 'Shipped / Ordered', 'Bins']],
+        head: [['Finished Good', 'Ordered', 'Bins']],
         body,
         styles: { fontSize: 10, cellPadding: 2 },
-        columnStyles: { 1: { halign:'right', cellWidth: 35 } }
+        columnStyles: { 1: { halign:'right', cellWidth: 25 } }
       })
 
-      doc.save(`SO_${order.so_number || order.id}.pdf`)
+      const blob = doc.output('blob')
+      const blobURL = URL.createObjectURL(blob)
+
+      const iframe = document.createElement('iframe')
+      iframe.style.position = 'fixed'
+      iframe.style.right = '0'
+      iframe.style.bottom = '0'
+      iframe.style.width = '0'
+      iframe.style.height = '0'
+      iframe.style.border = 'none'
+      iframe.src = blobURL
+      document.body.appendChild(iframe)
+
+      iframe.onload = function () {
+        iframe.contentWindow.focus()
+        iframe.contentWindow.print()
+        // ✅ do not auto-close iframe
+      }
     }catch(err){
       alert('Failed to print: ' + (err?.message || String(err)))
     }
