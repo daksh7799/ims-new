@@ -31,6 +31,7 @@ import RawAdjust from './pages/RawAdjust.jsx'
 import SOAdmin from './pages/SOAdmin.jsx'
 import RawProcess from './pages/RawProcess.jsx'
 import FgSalesReport from './pages/FgSalesReport.jsx'  // 👈 NEW MODULE
+import RawInwardReport from './pages/RawInwardReport.jsx'  // 👈 NEW MODULE
 
 const LINKS = [
   { key: 'dashboard', path: '/', label: 'Dashboard', end: true },
@@ -47,6 +48,8 @@ const LINKS = [
   { key: 'inv-fg', path: '/inv-fg', label: 'FG Inventory' },
   { key: 'blends', path: '/blends', label: 'Blend Recipes' },
   { key: 'blend-mfg', path: '/blend-manufacture', label: 'Blend Manufacture' },
+  { key: 'raw-inward-report', path: '/raw-inward-report', label: 'Raw Inward Report' },
+
 
   // utilities
   { key: 'trace', path: '/trace', label: 'Packet Trace' },
@@ -126,6 +129,8 @@ export default function App() {
 
             {canSee('masters') && <Route path="/masters" element={<AdminMasters />} />}
             {canSee('admin') && <Route path="/admin" element={<AdminUsers />} />}
+            {canSee('raw-inward-report') && <Route path="/raw-inward-report" element={<RawInwardReport />} />}
+
 
             {/* fallback */}
             <Route path="*" element={<div style={{ padding: 20 }}>Not found or access denied.</div>} />

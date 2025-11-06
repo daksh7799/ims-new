@@ -5,7 +5,7 @@ import { supabase } from '../supabaseClient'
 const ALL_MODULES = [
   'dashboard','raw','bom','mfg','live','putaway','bin-inv',
   'sales','outward','returns','inv-rm','inv-fg',
-  'blends','blend-mfg',
+  'blends','blend-mfg','raw-inward-report',
   // utilities
   'trace','raw-adjust','so-admin','raw-process','fg-sales', // ✅ Added fg-sales here
   // admin areas
