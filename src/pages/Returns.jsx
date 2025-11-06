@@ -37,9 +37,9 @@ function fmt(d) {
 export default function Returns() {
   const [tab, setTab] = useState("scan"); // scan | nobarcode | scrap
   const navigate = useNavigate();
-
   const [toast, setToast] = useState(null);
-  function showToast(message, type = "ok", time = 2000) {
+
+  function showToast(message, type = "ok", time = 2500) {
     setToast({ message, type });
     setTimeout(() => setToast(null), time);
   }
@@ -57,7 +57,11 @@ export default function Returns() {
   const [nbQty, setNbQty] = useState(1);
   const [nbNote, setNbNote] = useState("");
   const [nbBusy, setNbBusy] = useState(false);
-  const [nbCreated, setNbCreated] = useState([]); // 🆕 Last run preview
+  const [nbCreated, setNbCreated] = useState([]);
+
+  // === Bulk No-barcode ===
+  const [bulkRows, setBulkRows] = useState([]);
+  const [bulkBusy, setBulkBusy] = useState(false);
 
   // === Scrap ===
   const [scrapCode, setScrapCode] = useState("");
@@ -120,15 +124,12 @@ export default function Returns() {
         p_note: scanNote || null,
       });
       if (error) throw error;
-
-      const msg =
-        data?.message || `Packet ${barcode} successfully returned`;
-      showToast(msg, "ok");
+      showToast(`Packet ${barcode} returned`, "ok");
       setScanCode("");
       setScanNote("");
       loadRows();
     } catch (err) {
-      showToast(err.message || "Return failed", "err");
+      showToast(err.message, "err");
     } finally {
       setScanBusy(false);
       setTimeout(() => scanRef.current?.focus(), 0);
@@ -151,49 +152,129 @@ export default function Returns() {
     return () => clearTimeout(scanTimer.current);
   }, [scanCode, autoScan, tab]);
 
-  /** ---------------- NO BARCODE RETURN ---------------- **/
+  /** ---------------- NO BARCODE RETURN (Single) ---------------- **/
   async function doNoBarcode() {
     if (!nbFgId) return alert("Select a Finished Good");
     const qty = Number(nbQty);
-    if (!Number.isFinite(qty) || qty <= 0)
-      return alert("Qty must be positive");
+    if (!Number.isFinite(qty) || qty <= 0) return alert("Qty must be positive");
 
     setNbBusy(true);
     try {
       const { data, error } = await supabase.rpc("return_no_barcode", {
         p_finished_good_id: String(nbFgId),
-        p_qty_units: qty,
+        p_qty_units: parseInt(qty, 10),
         p_note: nbNote || null,
       });
       if (error) throw error;
-
       const barcodes =
-        data?.barcodes && Array.isArray(data.barcodes)
-          ? data.barcodes.map((b) => ({
-              code: b,
-              name: data?.fg_name?.toUpperCase() || "UNKNOWN",
-            }))
-          : [];
-
-      if (barcodes.length) {
-        setNbCreated(barcodes);
-        showToast(
-          `✅ ${barcodes.length} packet(s) created (${data?.fg_name})`,
-          "ok"
-        );
-      } else {
-        showToast("✅ No-barcode return created.", "ok");
-      }
-
-      setNbFgId("");
-      setNbQty(1);
-      setNbNote("");
+        data?.barcodes?.map((b) => ({
+          code: b,
+          name: data?.fg_name?.toUpperCase() || "UNKNOWN",
+        })) || [];
+      setNbCreated(barcodes);
+      showToast(`✅ ${barcodes.length} packet(s) created`);
       loadRows();
     } catch (err) {
-      showToast(err.message || "Failed", "err");
+      showToast(err.message, "err");
     } finally {
       setNbBusy(false);
     }
+  }
+
+  /** ---------------- BULK NO BARCODE RETURN ---------------- **/
+  async function downloadSampleCsv() {
+    const { data, error } = await supabase
+      .from("finished_goods")
+      .select("name")
+      .order("name");
+    if (error) return showToast("Error loading FG list", "err");
+
+    const header = "finished_good_name,qty\n";
+    const body = data.map((r) => `${r.name},`).join("\n");
+    const blob = new Blob([header + body], { type: "text/csv" });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement("a");
+    a.href = url;
+    a.download = "sample_no_barcode_return.csv";
+    a.click();
+    URL.revokeObjectURL(url);
+  }
+
+  function handleBulkCsv(e) {
+    const file = e.target.files?.[0];
+    if (!file) return;
+    const reader = new FileReader();
+    reader.onload = (ev) => {
+      const text = ev.target.result;
+      const rows = text
+        .split(/\r?\n/)
+        .slice(1)
+        .map((line) => line.split(","))
+        .filter((r) => r.length >= 2)
+        .map(([name, qty]) => ({
+          name: name?.trim(),
+          qty: Number(qty || 0),
+        }))
+        .filter((r) => r.qty > 0);
+      setBulkRows(rows);
+      showToast(`${rows.length} valid items loaded`, "ok");
+    };
+    reader.readAsText(file);
+  }
+
+  async function createBulkReturns() {
+    if (!bulkRows.length) return alert("No valid rows loaded");
+    setBulkBusy(true);
+    const allCreated = [];
+    const notFound = [];
+
+    for (const r of bulkRows) {
+      try {
+        const { data: fg } = await supabase
+          .from("finished_goods")
+          .select("id,name")
+          .ilike("name", r.name)
+          .maybeSingle();
+
+        if (!fg?.id) {
+          notFound.push(r.name);
+          continue;
+        }
+
+        const qtyInt = parseInt(r.qty, 10);
+
+        const { data, error } = await supabase.rpc("return_no_barcode", {
+          p_finished_good_id: fg.id,
+          p_qty_units: qtyInt,
+          p_note: "Bulk No-barcode Return",
+        });
+        if (error) throw error;
+
+        if (data?.barcodes?.length) {
+          allCreated.push(
+            ...data.barcodes.map((b) => ({
+              code: b,
+              name: data?.fg_name || r.name,
+            }))
+          );
+        }
+      } catch (err) {
+        console.error("Error:", r.name, err.message);
+      }
+    }
+
+    setNbCreated(allCreated);
+    if (notFound.length) {
+      showToast(
+        `⚠️ ${notFound.length} item(s) not found: ${notFound.join(", ")}`,
+        "err",
+        6000
+      );
+    } else {
+      showToast(`✅ Created ${allCreated.length} barcodes`, "ok");
+    }
+    setBulkBusy(false);
+    loadRows();
   }
 
   function openNbLabels() {
@@ -204,22 +285,6 @@ export default function Returns() {
     );
     navigate("/labels", {
       state: { title: "No Barcode Return", codes, namesByCode },
-    });
-  }
-
-  function printNbLabels() {
-    if (!nbCreated.length) return;
-    const codes = nbCreated.map((x) => x.code);
-    const namesByCode = Object.fromEntries(
-      nbCreated.map((x) => [x.code, x.name])
-    );
-    navigate("/labels", {
-      state: {
-        title: "No Barcode Return",
-        codes,
-        namesByCode,
-        autoPrint: true,
-      },
     });
   }
 
@@ -234,15 +299,12 @@ export default function Returns() {
         p_note: scrapNote || null,
       });
       if (error) throw error;
-      const msg =
-        data?.message ||
-        `Packet ${barcode} marked scrapped and RM recovery logged`;
-      showToast(msg, "ok");
+      showToast(`Scrapped ${barcode}`, "ok");
       setScrapCode("");
       setScrapNote("");
       loadRows();
     } catch (err) {
-      showToast(err.message || "Scrap failed", "err");
+      showToast(err.message, "err");
     } finally {
       setScrapBusy(false);
       setTimeout(() => scrapRef.current?.focus(), 0);
@@ -337,6 +399,7 @@ export default function Returns() {
         {/* === No Barcode Return === */}
         {tab === "nobarcode" && (
           <div className="bd grid gap-3">
+            {/* Single Return */}
             <div className="row flex-wrap gap-2">
               <AsyncFGSelect
                 value={nbFgId}
@@ -359,50 +422,84 @@ export default function Returns() {
                 style={{ minWidth: 260 }}
               />
               <button className="btn" onClick={doNoBarcode} disabled={nbBusy}>
-                {nbBusy ? "Working…" : "Create Returns"}
+                {nbBusy ? "Working…" : "Create Return"}
               </button>
             </div>
 
-            {/* 🆕 Last Run Preview */}
+            {/* Bulk Upload */}
+            <div className="card">
+              <div className="hd">
+                <b>Bulk No Barcode Returns</b>
+                <div className="row" style={{ gap: 8 }}>
+                  <button className="btn outline" onClick={downloadSampleCsv}>
+                    📄 Download Sample CSV
+                  </button>
+                  <input
+                    type="file"
+                    accept=".csv"
+                    onChange={handleBulkCsv}
+                    style={{ display: "none" }}
+                    id="bulkCsv"
+                  />
+                  <label htmlFor="bulkCsv" className="btn outline">
+                    ⬆️ Upload CSV
+                  </label>
+                  <button
+                    className="btn"
+                    onClick={createBulkReturns}
+                    disabled={bulkBusy || !bulkRows.length}
+                  >
+                    {bulkBusy ? "Working…" : "Create Bulk Returns"}
+                  </button>
+                </div>
+              </div>
+              {!!bulkRows.length && (
+                <div className="bd">
+                  <table className="table">
+                    <thead>
+                      <tr>
+                        <th>Finished Good</th>
+                        <th>Qty</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {bulkRows.map((r, i) => (
+                        <tr key={i}>
+                          <td>{r.name}</td>
+                          <td>{r.qty}</td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+              )}
+            </div>
+
+            {/* Created Barcodes */}
             {!!nbCreated.length && (
               <div className="card">
                 <div className="hd">
-                  <b>Last Run Preview (No Barcode Returns)</b>
-                  <span className="badge">
-                    {nbCreated.length} packet(s)
-                  </span>
-                  <div className="row" style={{ gap: 8 }}>
-                    <button className="btn outline" onClick={openNbLabels}>
-                      Open Labels
-                    </button>
-                    <button className="btn" onClick={printNbLabels}>
-                      🖨️ Print Labels
-                    </button>
-                  </div>
+                  <b>Generated Barcodes</b>
+                  <span className="badge">{nbCreated.length}</span>
+                  <button className="btn outline" onClick={openNbLabels}>
+                    Open Labels
+                  </button>
                 </div>
-                <div className="bd">
-                  <div
-                    className="grid"
-                    style={{
-                      gridTemplateColumns: "repeat(auto-fill,minmax(240px,1fr))",
-                    }}
-                  >
-                    {nbCreated.map((x) => (
-                      <div key={x.code} className="card">
-                        <div className="bd">
-                          <div style={{ fontWeight: 600 }}>{x.name}</div>
-                          <code
-                            style={{
-                              fontFamily: "monospace",
-                              wordBreak: "break-all",
-                            }}
-                          >
-                            {x.code}
-                          </code>
-                        </div>
+                <div
+                  className="bd grid"
+                  style={{
+                    gridTemplateColumns:
+                      "repeat(auto-fill,minmax(240px,1fr))",
+                  }}
+                >
+                  {nbCreated.map((x) => (
+                    <div key={x.code} className="card">
+                      <div className="bd">
+                        <div style={{ fontWeight: 600 }}>{x.name}</div>
+                        <code style={{ wordBreak: "break-all" }}>{x.code}</code>
                       </div>
-                    ))}
-                  </div>
+                    </div>
+                  ))}
                 </div>
               </div>
             )}
@@ -484,14 +581,12 @@ export default function Returns() {
                 <tr key={r.id}>
                   <td>{r.id}</td>
                   <td>{fmt(r.returned_at)}</td>
-                  <td style={{ fontFamily: "monospace" }}>
-                    {r.packet_code || "—"}
-                  </td>
+                  <td>{r.packet_code || "—"}</td>
                   <td>{r.finished_good_name || "—"}</td>
                   <td>{r.note || "—"}</td>
                 </tr>
               ))}
-              {visible.length === 0 && (
+              {!visible.length && (
                 <tr>
                   <td colSpan="5" style={{ color: "var(--muted)" }}>
                     No returns
