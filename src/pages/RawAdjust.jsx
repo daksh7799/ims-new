@@ -105,7 +105,7 @@ export default function RawAdjust() {
 
     if (!newBill) return alert("Bill number is required.");
     if (!newVendor) return alert("Vendor is required.");
-    if (!Number.isFinite(newQty) || newQty <= 0) return alert("Quantity must be a positive number.");
+    if (!Number.isFinite(newQty) || newQty < 0) return alert("Quantity must be a positive number.");
 
     setSaving(true);
     try {
