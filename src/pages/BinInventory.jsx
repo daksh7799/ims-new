@@ -16,24 +16,40 @@ export default function BinInventory(){
   const [binFilter, setBinFilter] = useState('')
   const [loading, setLoading] = useState(true)
   const [errorMsg, setErrorMsg] = useState('')
+  const [page, setPage] = useState(1)
+  const pageSize = 200
 
-  async function load(){
+  async function loadAll(){
     setLoading(true)
     try{
-      const [{ data:inv, error:e1 }, { data:binRows, error:e2 }] = await Promise.all([
-        supabase
+      // 🟢 fetch all data in chunks
+      const limit = 1000
+      let from = 0
+      let to = limit - 1
+      let all = []
+      while (true) {
+        const { data, error } = await supabase
           .from('v_bin_inventory')
           .select('bin_code, packet_code, finished_good_name, status, produced_at, added_at')
           .order('bin_code', { ascending: true })
-          .order('added_at', { ascending: false }),
-        supabase
-          .from('v_bin_counts')
-          .select('bin_code, packets')
-          .order('bin_code', { ascending: true })
-      ])
-      if(e1) throw e1
-      if(e2) console.warn(e2)
-      setRows(inv || [])
+          .order('added_at', { ascending: false })
+          .range(from, to)
+        if (error) throw error
+        if (!data?.length) break
+        all.push(...data)
+        if (data.length < limit) break
+        from += limit
+        to += limit
+      }
+
+      // get bin summary
+      const { data: binRows, error: e2 } = await supabase
+        .from('v_bin_counts')
+        .select('bin_code, packets')
+        .order('bin_code', { ascending: true })
+      if (e2) console.warn(e2)
+
+      setRows(all)
       setBins((binRows || []).map(b => ({ code: b.bin_code, count: b.packets })))
       setErrorMsg('')
     }catch(e){
@@ -46,20 +62,22 @@ export default function BinInventory(){
     }
   }
 
-  useEffect(()=>{ load() }, [])
+  useEffect(()=>{ loadAll() }, [])
 
+  // realtime refresh
   useEffect(()=>{
     const ch1 = supabase
       .channel('realtime:putaway')
-      .on('postgres_changes', { event:'*', schema:'public', table:'packet_putaway' }, () => load())
+      .on('postgres_changes', { event:'*', schema:'public', table:'packet_putaway' }, () => loadAll())
     const ch2 = supabase
       .channel('realtime:packets')
-      .on('postgres_changes', { event:'*', schema:'public', table:'packets' }, () => load())
+      .on('postgres_changes', { event:'*', schema:'public', table:'packets' }, () => loadAll())
     ch1.subscribe()
     ch2.subscribe()
     return () => { try{ supabase.removeChannel(ch1) }catch{}; try{ supabase.removeChannel(ch2) }catch{} }
   }, [])
 
+  // client-side filter + pagination
   const filtered = useMemo(()=>{
     const qq = q.trim().toLowerCase()
     const bf = (binFilter || '').trim().toUpperCase()
@@ -73,6 +91,12 @@ export default function BinInventory(){
       )
     })
   }, [rows, q, binFilter])
+
+  const totalUnits = rows.length
+  const filteredUnits = filtered.length
+
+  const totalPages = Math.max(1, Math.ceil(filteredUnits / pageSize))
+  const paged = filtered.slice((page - 1) * pageSize, page * pageSize)
 
   function exportCSV(){
     downloadCSV('bin_inventory.csv', filtered.map(r => ({
@@ -88,24 +112,28 @@ export default function BinInventory(){
   return (
     <div className="grid">
       <div className="card">
-        <div className="hd">
+        <div className="hd row space-between">
           <b>Bin Inventory</b>
-          <div className="row" style={{ gap:8 }}>
-            <input
-              placeholder="Search barcode / item / bin…"
-              value={q}
-              onChange={e=>setQ(e.target.value)}
-              style={{ minWidth:280 }}
-            />
-            <select value={binFilter} onChange={e=>setBinFilter(e.target.value)}>
-              <option value="">All Bins</option>
-              {bins.map(b=>(
-                <option key={b.code} value={b.code}>{b.code} ({b.count})</option>
-              ))}
-            </select>
-            <button className="btn outline" onClick={exportCSV} disabled={loading || !filtered.length}>Export CSV</button>
-            <button className="btn" onClick={load} disabled={loading}>{loading ? 'Refreshing…' : 'Refresh'}</button>
-          </div>
+          <span style={{ fontSize:13, color:'var(--muted)' }}>
+            Total Units: <b>{totalUnits}</b> &nbsp;|&nbsp; Showing: <b>{filteredUnits}</b> &nbsp;|&nbsp; Page {page}/{totalPages}
+          </span>
+        </div>
+
+        <div className="row" style={{ gap:8, margin:'8px 0' }}>
+          <input
+            placeholder="Search barcode / item / bin…"
+            value={q}
+            onChange={e=>{ setQ(e.target.value); setPage(1) }}
+            style={{ minWidth:280 }}
+          />
+          <select value={binFilter} onChange={e=>{ setBinFilter(e.target.value); setPage(1) }}>
+            <option value="">All Bins</option>
+            {bins.map(b=>(
+              <option key={b.code} value={b.code}>{b.code} ({b.count})</option>
+            ))}
+          </select>
+          <button className="btn outline" onClick={exportCSV} disabled={loading || !filtered.length}>Export CSV</button>
+          <button className="btn" onClick={loadAll} disabled={loading}>{loading ? 'Refreshing…' : 'Refresh'}</button>
         </div>
 
         <div className="bd" style={{ overflow:'auto' }}>
@@ -122,7 +150,7 @@ export default function BinInventory(){
               </tr>
             </thead>
             <tbody>
-              {filtered.map((r, i)=>(
+              {paged.map((r, i)=>(
                 <tr key={`${r.packet_code}-${i}`}>
                   <td><span className="badge">{r.bin_code}</span></td>
                   <td style={{ fontFamily:'monospace' }}>{r.packet_code}</td>
@@ -132,7 +160,7 @@ export default function BinInventory(){
                   <td>{fmt(r.added_at)}</td>
                 </tr>
               ))}
-              {filtered.length===0 && (
+              {paged.length===0 && (
                 <tr>
                   <td colSpan="6" style={{ color:'var(--muted)' }}>
                     {loading ? 'Loading…' : 'No packets in bins'}
@@ -141,6 +169,23 @@ export default function BinInventory(){
               )}
             </tbody>
           </table>
+        </div>
+
+        <div className="row center" style={{ marginTop:10, gap:10 }}>
+          <button
+            className="btn outline"
+            onClick={()=>setPage(p=>Math.max(1,p-1))}
+            disabled={page<=1 || loading}
+          >
+            ← Prev
+          </button>
+          <button
+            className="btn outline"
+            onClick={()=>setPage(p=>Math.min(totalPages,p+1))}
+            disabled={page>=totalPages || loading}
+          >
+            Next →
+          </button>
         </div>
       </div>
     </div>
