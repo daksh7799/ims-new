@@ -25,7 +25,6 @@ async function fetchAllFinishedGoods(limit=1000){
   return out
 }
 
-// --- helper to load bins per FG (no date in output) ---
 async function getBinsForFgNames(names){
   if(!names.length) return {}
   const { data: allBins, error } = await supabase
@@ -59,10 +58,12 @@ export default function SalesOrders(){
 
   const [customer,setCustomer]=useState('')
   const [soNumber,setSoNumber]=useState('')
+  const [note,setNote]=useState('')
   const [lines,setLines]=useState([{ finished_good_id:'', qty:'' }])
 
   const [impCustomer,setImpCustomer]=useState('')
   const [impSoNumber,setImpSoNumber]=useState('')
+  const [impNote,setImpNote]=useState('')
   const [importing,setImporting]=useState(false)
 
   const [q,setQ]=useState('')
@@ -71,11 +72,23 @@ export default function SalesOrders(){
 
   async function load(){
     setLoading(true)
-    const [{ data: list }, { data: cust }] = await Promise.all([
-      supabase.rpc('so_api_list'),
-      supabase.from('customers').select('id,name').eq('is_active',true).order('name')
+    // pull from our new view
+    const [{ data: list, error: err1 }, { data: cust, error: err2 }] = await Promise.all([
+      supabase
+        .from('v_so_summary')
+        .select('*')
+        .order('id', { ascending: false }),
+      supabase
+        .from('customers')
+        .select('id,name')
+        .eq('is_active',true)
+        .order('name')
     ])
-    setOrders(list||[]); setCustomers(cust||[]); setLoading(false)
+    if(err1) console.error(err1)
+    if(err2) console.error(err2)
+    setOrders(list||[])
+    setCustomers(cust||[])
+    setLoading(false)
   }
 
   async function buildFgIndex(){
@@ -111,11 +124,12 @@ export default function SalesOrders(){
     const { error } = await supabase.rpc('so_api_create', {
       p_customer_name: customer.trim(),
       p_lines: payload,
-      p_so_number: soNumber.trim() || null
+      p_so_number: soNumber.trim() || null,
+      p_note: note.trim() || null   // works with our merged function
     })
     if(error) return alert(error.message)
 
-    setCustomer(''); setSoNumber('')
+    setCustomer(''); setSoNumber(''); setNote('')
     setLines([{finished_good_id:'',qty:''}])
     load()
   }
@@ -143,11 +157,12 @@ export default function SalesOrders(){
       const { error } = await supabase.rpc('so_api_create', {
         p_customer_name: impCustomer.trim(),
         p_lines: payload,
-        p_so_number: impSoNumber.trim() || null
+        p_so_number: impSoNumber.trim() || null,
+        p_note: impNote.trim() || null
       })
       if(error) throw error
       alert('SO created from file')
-      setImpSoNumber(''); load()
+      setImpSoNumber(''); setImpNote(''); load()
     }catch(err){ alert(err.message) }
     finally{ setImporting(false); e.target.value='' }
   }
@@ -162,7 +177,7 @@ export default function SalesOrders(){
   const filtered = useMemo(()=>{
     const s=q.trim().toLowerCase()
     return (orders||[]).filter(o =>
-      (hideShipped ? o.status !== 'shipped' : true) &&
+      (hideShipped ? o.status !== 'Cleared' : true) &&  // our view uses Pending/Partial/Cleared
       (
         !s ||
         String(o.so_number||'').toLowerCase().includes(s) ||
@@ -173,12 +188,17 @@ export default function SalesOrders(){
 
   function exportOrders(){
     downloadCSV('sales_orders.csv', filtered.map(o=>({
-      id:o.id, so_number:o.so_number, customer:o.customer_name,
-      status:o.status, shipped:o.qty_shipped_total, ordered:o.qty_ordered_total, created_at:o.created_at
+      id:o.id,
+      so_number:o.so_number,
+      customer:o.customer_name,
+      status:o.status,
+      shipped:o.qty_shipped_total,
+      ordered:o.qty_ordered_total,
+      note:o.note,
+      created_at:o.created_at || ''
     })))
   }
 
-  // ✅ Print stays open until user closes it
   async function printSO(order){
     try{
       const [{ default: jsPDF }, { default: autoTable }] = await Promise.all([
@@ -190,8 +210,16 @@ export default function SalesOrders(){
       doc.text(`Sales Order ${order.so_number || order.id}`, 14, 16)
       doc.setFontSize(11)
       doc.text(`Customer: ${order.customer_name || '-'}`, 14, 24)
+
+      let currentY = 31
+      if (order.note) {
+        const splitNote = doc.splitTextToSize(`Note: ${order.note}`, 180)
+        doc.text(splitNote, 14, currentY)
+        currentY += splitNote.length * 6
+      }
       if(order.created_at){
-        doc.text(`Created: ${new Date(order.created_at).toLocaleString()}`, 14, 31)
+        doc.text(`Created: ${new Date(order.created_at).toLocaleString()}`, 14, currentY)
+        currentY += 7
       }
 
       const { data: lines } = await supabase
@@ -211,7 +239,7 @@ export default function SalesOrders(){
       })
 
       autoTable(doc, {
-        startY: 38,
+        startY: currentY + 5,
         head: [['Finished Good', 'Ordered', 'Bins']],
         body,
         styles: { fontSize: 10, cellPadding: 2 },
@@ -220,7 +248,6 @@ export default function SalesOrders(){
 
       const blob = doc.output('blob')
       const blobURL = URL.createObjectURL(blob)
-
       const iframe = document.createElement('iframe')
       iframe.style.position = 'fixed'
       iframe.style.right = '0'
@@ -230,11 +257,9 @@ export default function SalesOrders(){
       iframe.style.border = 'none'
       iframe.src = blobURL
       document.body.appendChild(iframe)
-
       iframe.onload = function () {
         iframe.contentWindow.focus()
         iframe.contentWindow.print()
-        // ✅ do not auto-close iframe
       }
     }catch(err){
       alert('Failed to print: ' + (err?.message || String(err)))
@@ -257,6 +282,12 @@ export default function SalesOrders(){
               value={impSoNumber}
               readOnly
               style={{ background: '#f8f8f8', color: '#777', cursor: 'not-allowed' }}
+            />
+            <input
+              placeholder="Add note (optional)"
+              value={impNote}
+              onChange={e=>setImpNote(e.target.value)}
+              style={{width:220}}
             />
             <input type="file" accept=".xlsx,.xls,.csv" onChange={onImportOneSO} disabled={importing}/>
             <button className="btn ghost" onClick={downloadSampleCSV}>📄 Download Sample CSV</button>
@@ -283,6 +314,13 @@ export default function SalesOrders(){
               style={{ background: '#f8f8f8', color: '#777', cursor: 'not-allowed' }}
             />
           </div>
+
+          <textarea
+            placeholder="Add note (optional)"
+            value={note}
+            onChange={e=>setNote(e.target.value)}
+            style={{width:'100%', minHeight:60}}
+          />
 
           <table className="table">
             <thead><tr><th style={{width:'50%'}}>Finished Good</th><th style={{width:120}}>Qty</th><th></th></tr></thead>
@@ -337,6 +375,7 @@ export default function SalesOrders(){
               <tr>
                 <th>SO</th><th>Customer</th><th>Status</th>
                 <th style={{textAlign:'right'}}>Shipped / Ordered</th>
+                <th>Note</th>
                 <th>Created</th>
                 <th>Actions</th>
               </tr>
@@ -348,14 +387,15 @@ export default function SalesOrders(){
                   <td>{o.customer_name}</td>
                   <td><span className="badge">{o.status}</span></td>
                   <td style={{textAlign:'right'}}>{o.qty_shipped_total} / {o.qty_ordered_total}</td>
-                  <td>{new Date(o.created_at).toLocaleString()}</td>
+                  <td style={{maxWidth:180, overflow:'hidden', textOverflow:'ellipsis', whiteSpace:'nowrap'}}>{o.note || ''}</td>
+                  <td>{o.created_at ? new Date(o.created_at).toLocaleString() : '—'}</td>
                   <td>
                     <button className="btn outline" onClick={()=>printSO(o)}>Print</button>
                   </td>
                 </tr>
               ))}
               {filtered.length===0 && (
-                <tr><td colSpan="6" style={{color:'var(--muted)'}}>{loading ? 'Loading…' : 'No orders'}</td></tr>
+                <tr><td colSpan="7" style={{color:'var(--muted)'}}>{loading ? 'Loading…' : 'No orders'}</td></tr>
               )}
             </tbody>
           </table>
