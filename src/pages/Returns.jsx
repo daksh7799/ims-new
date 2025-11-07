@@ -52,7 +52,7 @@ export default function Returns() {
   const scanTimer = useRef(null);
   const scanRef = useRef(null);
 
-  // === No-barcode ===
+  // === No-barcode (single) ===
   const [nbFgId, setNbFgId] = useState("");
   const [nbQty, setNbQty] = useState(1);
   const [nbNote, setNbNote] = useState("");
@@ -60,8 +60,10 @@ export default function Returns() {
   const [nbCreated, setNbCreated] = useState([]);
 
   // === Bulk No-barcode ===
-  const [bulkRows, setBulkRows] = useState([]);
+  const [bulkRows, setBulkRows] = useState([]); // [{name, qty}]
   const [bulkBusy, setBulkBusy] = useState(false);
+  const [bulkDone, setBulkDone] = useState(0);
+  const [bulkTotal, setBulkTotal] = useState(0);
 
   // === Scrap ===
   const [scrapCode, setScrapCode] = useState("");
@@ -182,15 +184,35 @@ export default function Returns() {
   }
 
   /** ---------------- BULK NO BARCODE RETURN ---------------- **/
+  // Download: ALL finished goods (user wants full list)
   async function downloadSampleCsv() {
-    const { data, error } = await supabase
-      .from("finished_goods")
-      .select("name")
-      .order("name");
-    if (error) return showToast("Error loading FG list", "err");
+    const limit = 1000;
+    let from = 0;
+    let to = limit - 1;
+    let all = [];
+
+    while (true) {
+      const { data, error } = await supabase
+        .from("finished_goods")
+        .select("name")
+        .order("name", { ascending: true })
+        .range(from, to);
+
+      if (error) {
+        showToast("Error loading FG list", "err");
+        console.error(error);
+        return;
+      }
+
+      if (!data?.length) break;
+      all.push(...data);
+      if (data.length < limit) break;
+      from += limit;
+      to += limit;
+    }
 
     const header = "finished_good_name,qty\n";
-    const body = data.map((r) => `${r.name},`).join("\n");
+    const body = all.map((r) => `${r.name},`).join("\n");
     const blob = new Blob([header + body], { type: "text/csv" });
     const url = URL.createObjectURL(blob);
     const a = document.createElement("a");
@@ -200,6 +222,7 @@ export default function Returns() {
     URL.revokeObjectURL(url);
   }
 
+  // Upload: ONLY keep rows where qty > 0
   function handleBulkCsv(e) {
     const file = e.target.files?.[0];
     if (!file) return;
@@ -212,12 +235,13 @@ export default function Returns() {
         .map((line) => line.split(","))
         .filter((r) => r.length >= 2)
         .map(([name, qty]) => ({
-          name: name?.trim(),
+          name: (name || "").trim(),
           qty: Number(qty || 0),
         }))
-        .filter((r) => r.qty > 0);
+        .filter((r) => r.name && Number.isFinite(r.qty) && r.qty > 0); // 🔴 only > 0
+
       setBulkRows(rows);
-      showToast(`${rows.length} valid items loaded`, "ok");
+      showToast(`${rows.length} item(s) with qty > 0 loaded`, "ok");
     };
     reader.readAsText(file);
   }
@@ -225,56 +249,94 @@ export default function Returns() {
   async function createBulkReturns() {
     if (!bulkRows.length) return alert("No valid rows loaded");
     setBulkBusy(true);
+    setBulkDone(0);
+    setBulkTotal(bulkRows.length);
+
     const allCreated = [];
     const notFound = [];
 
-    for (const r of bulkRows) {
-      try {
-        const { data: fg } = await supabase
+    try {
+      // preload ALL finished goods into a map (to avoid 1 query per row)
+      const limit = 1000;
+      let from = 0,
+        to = limit - 1,
+        allFG = [];
+      while (true) {
+        const { data, error } = await supabase
           .from("finished_goods")
           .select("id,name")
-          .ilike("name", r.name)
-          .maybeSingle();
+          .order("name", { ascending: true })
+          .range(from, to);
+        if (error) throw error;
+        if (!data?.length) break;
+        allFG.push(...data);
+        if (data.length < limit) break;
+        from += limit;
+        to += limit;
+      }
 
-        if (!fg?.id) {
+      const fgMap = new Map(
+        allFG.map((f) => [f.name.trim().toLowerCase(), f.id])
+      );
+
+      for (let idx = 0; idx < bulkRows.length; idx++) {
+        const r = bulkRows[idx];
+        setBulkDone(idx + 1);
+
+        const key = (r.name || "").trim().toLowerCase();
+        if (!key) continue;
+
+        // look up FG id
+        const fgId = fgMap.get(key);
+        if (!fgId) {
           notFound.push(r.name);
           continue;
         }
 
+        // qty already filtered to > 0 in handleBulkCsv, but keep guard
         const qtyInt = parseInt(r.qty, 10);
-
-        const { data, error } = await supabase.rpc("return_no_barcode", {
-          p_finished_good_id: fg.id,
-          p_qty_units: qtyInt,
-          p_note: "Bulk No-barcode Return",
-        });
-        if (error) throw error;
-
-        if (data?.barcodes?.length) {
-          allCreated.push(
-            ...data.barcodes.map((b) => ({
-              code: b,
-              name: data?.fg_name || r.name,
-            }))
-          );
+        if (!Number.isFinite(qtyInt) || qtyInt <= 0) {
+          continue;
         }
-      } catch (err) {
-        console.error("Error:", r.name, err.message);
-      }
-    }
 
-    setNbCreated(allCreated);
-    if (notFound.length) {
-      showToast(
-        `⚠️ ${notFound.length} item(s) not found: ${notFound.join(", ")}`,
-        "err",
-        6000
-      );
-    } else {
-      showToast(`✅ Created ${allCreated.length} barcodes`, "ok");
+        try {
+          const { data, error } = await supabase.rpc("return_no_barcode", {
+            p_finished_good_id: fgId,
+            p_qty_units: qtyInt,
+            p_note: "Bulk No-barcode Return",
+          });
+          if (error) throw error;
+
+          if (data?.barcodes?.length) {
+            allCreated.push(
+              ...data.barcodes.map((b) => ({
+                code: b,
+                name: data?.fg_name || r.name,
+              }))
+            );
+          }
+        } catch (err) {
+          console.error("Error for", r.name, err.message);
+        }
+      }
+
+      setNbCreated(allCreated);
+      if (notFound.length) {
+        showToast(
+          `⚠️ ${notFound.length} item(s) not found: ${notFound.join(", ")}`,
+          "err",
+          8000
+        );
+      } else {
+        showToast(`✅ Created ${allCreated.length} barcodes`, "ok");
+      }
+    } catch (err) {
+      console.error("Bulk return error:", err);
+      showToast(err.message, "err");
+    } finally {
+      setBulkBusy(false);
+      loadRows();
     }
-    setBulkBusy(false);
-    loadRows();
   }
 
   function openNbLabels() {
@@ -326,6 +388,9 @@ export default function Returns() {
     scrapTimer.current = setTimeout(() => doScrapByScan(v), 120);
     return () => clearTimeout(scrapTimer.current);
   }, [scrapCode, autoScrap, tab]);
+
+  const bulkPercent =
+    bulkTotal > 0 ? Math.floor((bulkDone / bulkTotal) * 100) : 0;
 
   /** ---------------- UI ---------------- **/
   return (
@@ -451,6 +516,11 @@ export default function Returns() {
                   >
                     {bulkBusy ? "Working…" : "Create Bulk Returns"}
                   </button>
+                  {bulkBusy && (
+                    <span style={{ fontSize: 12, color: "var(--muted)" }}>
+                      Processing {bulkDone} / {bulkTotal} ({bulkPercent}%)
+                    </span>
+                  )}
                 </div>
               </div>
               {!!bulkRows.length && (
@@ -496,7 +566,9 @@ export default function Returns() {
                     <div key={x.code} className="card">
                       <div className="bd">
                         <div style={{ fontWeight: 600 }}>{x.name}</div>
-                        <code style={{ wordBreak: "break-all" }}>{x.code}</code>
+                        <code style={{ wordBreak: "break-all" }}>
+                          {x.code}
+                        </code>
                       </div>
                     </div>
                   ))}
