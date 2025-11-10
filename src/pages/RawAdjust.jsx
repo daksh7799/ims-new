@@ -5,24 +5,23 @@ import { supabase } from "../supabaseClient";
 const today = () => new Date().toISOString().slice(0, 10);
 
 export default function RawAdjust() {
-  const [rows, setRows] = useState([]);            // recent raw_inward rows
-  const [vendors, setVendors] = useState([]);      // [{id,name}]
+  const [rows, setRows] = useState([]);            
+  const [vendors, setVendors] = useState([]);      
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
   const [err, setErr] = useState("");
-
-  // edits stash keyed by inward id
-  // { [id]: { qty, bill_no, vendor_id } }
   const [edits, setEdits] = useState({});
-
-  // selection for PDF
   const [sel, setSel] = useState(new Set());
+
+  // 🟢 new: date filter
+  const [selectedDate, setSelectedDate] = useState(today());
+
   const allSelected = useMemo(
     () => rows.length > 0 && rows.every(r => sel.has(r.id)),
     [rows, sel]
   );
 
-  async function load() {
+  async function load(date = selectedDate) {
     setLoading(true);
     setErr("");
     try {
@@ -39,8 +38,8 @@ export default function RawAdjust() {
             raw_materials ( name, unit ),
             vendors ( name )
           `)
-          .order("id", { ascending: false })
-          .limit(200),
+          .eq("purchase_date", date)   // ✅ only that day
+          .order("id", { ascending: false }),
         supabase.from("vendors").select("id,name").order("name"),
       ]);
       if (e1) throw e1;
@@ -49,7 +48,6 @@ export default function RawAdjust() {
       setRows(r || []);
       setVendors(v || []);
 
-      // seed edits with current values
       const next = {};
       (r || []).forEach((x) => {
         next[x.id] = {
@@ -72,17 +70,14 @@ export default function RawAdjust() {
 
   useEffect(() => {
     load();
-    // realtime refresh if raw_inward rows are added/updated elsewhere
     const ch = supabase
       .channel("rt:raw_inward")
-      .on("postgres_changes", { event: "*", schema: "public", table: "raw_inward" }, load)
+      .on("postgres_changes", { event: "*", schema: "public", table: "raw_inward" }, () => load(selectedDate))
       .subscribe();
     return () => { try { supabase.removeChannel(ch); } catch {} };
-  }, []);
+  }, [selectedDate]); // ✅ reload when date changes
 
-  function setEdit(id, patch) {
-    setEdits((m) => ({ ...m, [id]: { ...m[id], ...patch } }));
-  }
+  function setEdit(id, patch) { setEdits((m) => ({ ...m, [id]: { ...m[id], ...patch } })); }
 
   function toggleOne(id, checked) {
     setSel((s) => {
@@ -92,9 +87,7 @@ export default function RawAdjust() {
       return next;
     });
   }
-  function toggleAll(checked) {
-    setSel(checked ? new Set(rows.map((r) => r.id)) : new Set());
-  }
+  function toggleAll(checked) { setSel(checked ? new Set(rows.map((r) => r.id)) : new Set()); }
 
   async function saveOne(r) {
     const e = edits[r.id] || {};
@@ -109,7 +102,6 @@ export default function RawAdjust() {
 
     setSaving(true);
     try {
-      // 1) If qty changed, call RPC to adjust (writes ledger correctly).
       if (!sameQty) {
         const { error: e1 } = await supabase.rpc("raw_inward_adjust", {
           p_inward_id: r.id,
@@ -119,14 +111,12 @@ export default function RawAdjust() {
         if (e1) throw e1;
       }
 
-      // 2) Update header fields (vendor, bill_no). These don’t touch ledger.
       const { error: e2 } = await supabase
         .from("raw_inward")
         .update({ vendor_id: newVendor, bill_no: newBill })
         .eq("id", r.id);
       if (e2) throw e2;
 
-      // refresh this row locally
       setRows((list) =>
         list.map((x) =>
           x.id === r.id
@@ -142,36 +132,27 @@ export default function RawAdjust() {
       );
     } catch (error) {
       alert(`Save failed (id ${r.id}): ${error.message || error}`);
-    } finally {
-      setSaving(false);
-    }
+    } finally { setSaving(false); }
   }
 
   async function saveAll() {
     if (!rows.length) return;
     setSaving(true);
     try {
-      for (const r of rows) {
-        await saveOne(r);
-      }
+      for (const r of rows) { await saveOne(r); }
       alert("All visible rows saved.");
-    } finally {
-      setSaving(false);
-    }
+    } finally { setSaving(false); }
   }
 
   async function exportSelectedPDF() {
-    if (sel.size === 0) {
-      alert("Select at least one row to export.");
-      return;
-    }
+    if (sel.size === 0) return alert("Select at least one row to export.");
     try {
       const { default: jsPDF } = await import("jspdf");
       await import("jspdf-autotable");
 
       const doc = new jsPDF();
       doc.setFontSize(14);
-      doc.text("Raw Inward — Selected Entries", 14, 16);
+      doc.text(`Raw Inward — ${selectedDate}`, 14, 16);
 
       const body = rows
         .filter((r) => sel.has(r.id))
@@ -193,7 +174,7 @@ export default function RawAdjust() {
         styles: { fontSize: 10 },
       });
 
-      const fname = `raw_inward_selected_${today()}.pdf`;
+      const fname = `raw_inward_${selectedDate}.pdf`;
       doc.save(fname);
     } catch (error) {
       alert(`PDF export failed: ${error.message || error}`);
@@ -205,8 +186,16 @@ export default function RawAdjust() {
       <div className="card">
         <div className="hd">
           <b>Raw Inward — Adjust / Edit</b>
-          <div className="row" style={{ gap: 8 }}>
-            <button className="btn ghost" onClick={load} disabled={loading}>
+          <div className="row" style={{ gap: 8, flexWrap: "wrap" }}>
+            {/* 🗓️ Date picker */}
+            <input
+              type="date"
+              value={selectedDate}
+              onChange={(e) => setSelectedDate(e.target.value)}
+              style={{ padding: "4px 6px" }}
+              title="Filter by Purchase Date"
+            />
+            <button className="btn ghost" onClick={() => load(selectedDate)} disabled={loading}>
               {loading ? "Refreshing…" : "Refresh"}
             </button>
             <button className="btn" onClick={saveAll} disabled={saving || loading || rows.length === 0}>
@@ -218,18 +207,18 @@ export default function RawAdjust() {
           </div>
         </div>
 
-        {!!err && <div className="bd"><div className="badge err">{err}</div></div>}
+        {!!err && (
+          <div className="bd">
+            <div className="badge err">{err}</div>
+          </div>
+        )}
 
         <div className="bd" style={{ overflow: "auto" }}>
           <table className="table">
             <thead>
               <tr>
                 <th style={{ width: 34 }}>
-                  <input
-                    type="checkbox"
-                    checked={allSelected}
-                    onChange={(e) => toggleAll(e.target.checked)}
-                  />
+                  <input type="checkbox" checked={allSelected} onChange={(e) => toggleAll(e.target.checked)} />
                 </th>
                 <th>ID</th>
                 <th>Date</th>
@@ -301,7 +290,7 @@ export default function RawAdjust() {
               {rows.length === 0 && (
                 <tr>
                   <td colSpan={9} style={{ color: "var(--muted)" }}>
-                    {loading ? "Loading…" : "No inward entries"}
+                    {loading ? "Loading…" : "No inward entries for this date"}
                   </td>
                 </tr>
               )}
@@ -312,9 +301,10 @@ export default function RawAdjust() {
         <div className="s" style={{ color: "var(--muted)", marginTop: 6 }}>
           Notes:
           <ul style={{ margin: "6px 0 0 16px" }}>
+            <li>Filter entries by <b>Purchase Date</b> using the date picker above.</li>
             <li>Qty changes use <code>raw_inward_adjust(p_inward_id, p_new_qty, p_note)</code> to keep stock ledger correct.</li>
             <li>Vendor and Bill No. updates are saved directly on <code>raw_inward</code>.</li>
-            <li>Use the checkboxes to export selected rows to a PDF (jsPDF + autoTable).</li>
+            <li>Use the checkboxes to export selected rows to a PDF.</li>
           </ul>
         </div>
       </div>
