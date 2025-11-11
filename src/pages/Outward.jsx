@@ -197,17 +197,6 @@ export default function Outward() {
     return () => clearTimeout(typing.current)
   }, [scan, auto, soId])
 
-  /** -------------------- UNDO LAST -------------------- **/
-  async function undo() {
-    if (!soId) return
-    const { error } = await supabase.rpc('undo_last_allocation', { p_so_id: Number(soId) })
-    if (error) { setLastMsg(error.message); return }
-    setLastMsg('Undone')
-    await loadOne(soId)
-    await loadBinsForCurrentLines()
-    setTimeout(() => setLastMsg(''), 1200)
-  }
-
   /** -------------------- BIN INVENTORY -------------------- **/
   async function loadBinsForCurrentLines() {
     setBinsByFg({})
@@ -273,21 +262,16 @@ export default function Outward() {
       if (orderHdr.created_at) doc.text(`Created: ${fmtDT(orderHdr.created_at)}`, 14, 31)
       doc.text(`Ordered: ${totals.ordered}`, 14, 38)
 
-      // ✅ changed: show Ordered (not Shipped / Ordered)
       const body = (lines || []).map(l => {
         const fg = l.finished_good_name || ''
         const bins = binsByFg[norm(fg)] || []
         const binsText = bins.length ? bins.map(b => `${b.bin_code}: ${b.qty}`).join(', ') : '—'
-        return [
-          fg,
-          Number(l.qty_ordered || 0),   // ✅ ordered only
-          binsText
-        ]
+        return [fg, Number(l.qty_ordered || 0), binsText]
       })
 
       autoTable(doc, {
         startY: 45,
-        head: [['Finished Good', 'Ordered', 'Bins']], // ✅ changed header
+        head: [['Finished Good', 'Ordered', 'Bins']],
         body,
         styles: { fontSize: 10, cellPadding: 2 },
         columnStyles: { 1: { halign: 'right', cellWidth: 25 } }
@@ -300,45 +284,34 @@ export default function Outward() {
   }
 
   /** -------------------- CSV DOWNLOAD (Pending Finished Goods Only) -------------------- **/
-function downloadSOAsCSV() {
-  if (!soId) {
-    alert('Pick an order first')
-    return
+  function downloadSOAsCSV() {
+    if (!soId) {
+      alert('Pick an order first')
+      return
+    }
+    const pendingLines = (lines || []).filter(l => Number(l.qty_shipped || 0) < Number(l.qty_ordered || 0))
+    if (pendingLines.length === 0) {
+      alert('No pending finished goods — everything is outwarded.')
+      return
+    }
+    const header = ['finished_good', 'qty']
+    const rowsCsv = pendingLines.map(l => {
+      const fg = l.finished_good_name || ''
+      const shipped = Number(l.qty_shipped || 0)
+      const ordered = Number(l.qty_ordered || 0)
+      const remaining = Math.max(ordered - shipped, 0)
+      const safeFg = `"${fg.replace(/"/g, '""')}"`
+      return `${safeFg},${remaining}`
+    })
+    const csv = [header.join(','), ...rowsCsv].join('\n')
+    const blob = new Blob([csv], { type: 'text/csv;charset=utf-8;' })
+    const url = URL.createObjectURL(blob)
+    const a = document.createElement('a')
+    a.href = url
+    a.download = `Pending_FG_${orderHdr?.so_number || soId}.csv`
+    a.click()
+    URL.revokeObjectURL(url)
   }
-
-  // Filter: only those not fully outwarded
-  const pendingLines = (lines || []).filter(l => {
-    const shipped = Number(l.qty_shipped || 0)
-    const ordered = Number(l.qty_ordered || 0)
-    return shipped < ordered // only pending
-  })
-
-  if (pendingLines.length === 0) {
-    alert('No pending finished goods — everything is outwarded.')
-    return
-  }
-
-  // Prepare CSV
-  const header = ['finished_good', 'qty']
-  const rowsCsv = pendingLines.map(l => {
-    const fg = l.finished_good_name || ''
-    const shipped = Number(l.qty_shipped || 0)
-    const ordered = Number(l.qty_ordered || 0)
-    const remaining = Math.max(ordered - shipped, 0)
-    const safeFg = `"${fg.replace(/"/g, '""')}"`
-    return `${safeFg},${remaining}`
-  })
-
-  const csv = [header.join(','), ...rowsCsv].join('\n')
-  const blob = new Blob([csv], { type: 'text/csv;charset=utf-8;' })
-  const url = URL.createObjectURL(blob)
-  const a = document.createElement('a')
-  a.href = url
-  a.download = `Pending_FG_${orderHdr?.so_number || soId}.csv`
-  a.click()
-  URL.revokeObjectURL(url)
-}
-
 
   /** -------------------- UI -------------------- **/
   return (
@@ -393,7 +366,6 @@ function downloadSOAsCSV() {
               <input type="checkbox" checked={auto} onChange={e => setAuto(e.target.checked)} />
               Auto-scan
             </label>
-            <button className="btn ghost" onClick={undo} disabled={!soId || totals.shipped === 0}>Undo</button>
           </div>
         </div>
         <div className="bd">
