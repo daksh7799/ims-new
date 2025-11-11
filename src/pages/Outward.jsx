@@ -110,9 +110,11 @@ export default function Outward() {
 
     try {
       inFlight.current = true
+
+      // lightweight packet sanity check
       const { data: pktInfo, error: chkErr } = await supabase
         .from('v_live_barcodes_enriched')
-        .select('id, packet_code, status')
+        .select('packet_code, status')
         .eq('packet_code', pkt)
         .maybeSingle()
 
@@ -126,50 +128,38 @@ export default function Outward() {
         return
       }
 
-      const status = (pktInfo.status || '').toLowerCase()
-      if (status === 'scrapped') {
+      // only block scrapped; reuse is decided by backend
+      if ((pktInfo.status || '').toLowerCase() === 'scrapped') {
         window.alert(`🚫 Packet "${pkt}" is scrapped and cannot be outwarded.`)
         return
       }
-      if (status === 'outwarded') {
-        window.alert(`🚫 Packet "${pkt}" is already outwarded.`)
-        return
-      }
 
+      // 1) allocate to SO (this will fail on overscan or truly duplicate packet_id)
       const { error: allocErr } = await supabase.rpc('allocate_packet_to_order', {
         p_so_id: Number(soId),
         p_packet_code: pkt
       })
       if (allocErr) {
-        const msg = allocErr.message?.toLowerCase() || ''
-        if (msg.includes('duplicate key value') || msg.includes('outward_allocations_packet_id_key')) {
-          window.alert(`🚫 Packet "${pkt}" has already been outwarded!`)
-          return
-        }
         window.alert(`❌ Allocation error:\n${allocErr.message}`)
         return
       }
 
+      // 2) mark outward (stock movement)
       const { data, error: outErr } = await supabase.rpc('packet_outward_scan', {
         p_packet_code: pkt,
         p_note: `Outwarded for SO ${soId}`
       })
       if (outErr) {
-        const msg = outErr.message?.toLowerCase() || ''
-        if (msg.includes('duplicate key value') || msg.includes('outward_allocations_packet_id_key')) {
-          window.alert(`🚫 Packet "${pkt}" has already been outwarded!`)
-          return
-        }
         window.alert(`❌ Outward error:\n${outErr.message}`)
         return
       }
 
-      const msg = data?.message || `✅ Packet ${pkt} outwarded successfully`
-      setLastMsg(msg)
+      setLastMsg(data?.message || `✅ Packet ${pkt} outwarded successfully`)
       setScan('')
       await loadOne(soId)
       await loadBinsForCurrentLines()
 
+      // refresh list if we just cleared
       if (pendingOnly) {
         const approxCleared = (totals.shipped + 1) >= totals.ordered
         if (approxCleared) await loadOrders()
@@ -240,7 +230,9 @@ export default function Outward() {
         results[key] = arr
       }
       setBinsByFg(results)
-    } finally { setLoadingBins(false) }
+    } finally {
+      setLoadingBins(false)
+    }
   }
 
   useEffect(() => { loadBinsForCurrentLines() }, [JSON.stringify(lines)])
@@ -283,7 +275,7 @@ export default function Outward() {
     }
   }
 
-  /** -------------------- CSV DOWNLOAD (Pending Finished Goods Only) -------------------- **/
+  /** -------------------- CSV DOWNLOAD -------------------- **/
   function downloadSOAsCSV() {
     if (!soId) {
       alert('Pick an order first')
