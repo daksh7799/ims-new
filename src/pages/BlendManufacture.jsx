@@ -1,4 +1,3 @@
-// src/pages/BlendManufacture.jsx
 import { useEffect, useMemo, useState } from 'react'
 import { supabase } from '../supabaseClient'
 import { useToast } from '../ui/toast.jsx'
@@ -20,6 +19,7 @@ export default function BlendManufacture() {
   const [inv, setInv] = useState({})
   const [loading, setLoading] = useState(false)
   const [manufacturing, setManufacturing] = useState(false)
+  const [recent, setRecent] = useState([]) // 🆕 recent blends
 
   /** Load only outputs that have an ACTIVE blend recipe */
   useEffect(() => {
@@ -39,6 +39,7 @@ export default function BlendManufacture() {
         setOutputId('')
       }
     })()
+    loadRecentBlends() // 🆕 load recent blends on mount
   }, [push]) // eslint-disable-line react-hooks/exhaustive-deps
 
   /** Load recipe + inventory when outputId changes */
@@ -78,35 +79,25 @@ export default function BlendManufacture() {
     })()
   }, [outputId]) // eslint-disable-line react-hooks/exhaustive-deps
 
-  /** Smart inventory loader that auto-detects column name */
+  /** Smart inventory loader */
   async function loadInventoryFor(ids) {
     if (!ids.length) return
     const possibleCols = ['raw_material_id', 'rm_id', 'material_id', 'id']
     let foundCol = null
-    let data = null
     for (const col of possibleCols) {
-      const { data: d, error } = await supabase
-        .from('v_raw_inventory')
-        .select(`${col}, qty_on_hand`)
-        .limit(1)
+      const { data: d, error } = await supabase.from('v_raw_inventory').select(`${col}, qty_on_hand`).limit(1)
       if (!error && d && d.length && col in d[0]) {
         foundCol = col
         break
       }
     }
-    if (!foundCol) {
-      push('Cannot detect column in v_raw_inventory', 'err')
-      return
-    }
+    if (!foundCol) return push('Cannot detect column in v_raw_inventory', 'err')
 
     const { data: invRows, error } = await supabase
       .from('v_raw_inventory')
       .select(`${foundCol}, qty_on_hand`)
       .in(foundCol, ids)
-    if (error) {
-      push(error.message, 'err')
-      return
-    }
+    if (error) return push(error.message, 'err')
 
     const map = {}
     ;(invRows || []).forEach((r) => {
@@ -131,6 +122,7 @@ export default function BlendManufacture() {
 
   const insufficient = useMemo(() => rows.some((r) => r.short), [rows])
 
+  /** Manufacture blend */
   async function manufacture() {
     if (!outputId) return push('Pick an output raw material', 'warn')
     if (qty <= 0) return push('Enter valid quantity (kg)', 'warn')
@@ -146,52 +138,70 @@ export default function BlendManufacture() {
       if (error) return push(error.message, 'err')
       push(`Manufactured ${qty} kg`, 'ok')
       await refreshInv()
+      await loadRecentBlends() // 🆕 refresh recent list
     } finally {
       setManufacturing(false)
+    }
+  }
+
+  /** 🆕 Load last 20 manufactured blends (using rm_id) */
+  async function loadRecentBlends() {
+    try {
+      const { data, error } = await supabase
+        .from('stock_ledger')
+        .select('created_at, rm_id, qty, reason, note')
+        .eq('reason', 'blend_produce')
+        .order('created_at', { ascending: false })
+        .limit(20)
+
+      if (error) throw error
+
+      // Join with raw_materials to get names
+      const ids = [...new Set(data.map((d) => d.rm_id).filter(Boolean))]
+      if (ids.length) {
+        const { data: names } = await supabase
+          .from('raw_materials')
+          .select('id, name')
+          .in('id', ids)
+        const nameMap = Object.fromEntries((names || []).map((n) => [n.id, n.name]))
+        data.forEach((d) => {
+          d.rm_name = nameMap[d.rm_id] || d.rm_id
+        })
+      }
+
+      setRecent(data || [])
+    } catch (e) {
+      console.error('loadRecentBlends', e)
+      push(e.message, 'err')
     }
   }
 
   return (
     <div className="grid">
       <div className="card">
-        <div className="hd">
-          <b>Blend Manufacture (Multiple RMs → One RM)</b>
-        </div>
+        <div className="hd"><b>Blend Manufacture (Multiple RMs → One RM)</b></div>
 
         <div className="bd" style={{ display: 'grid', gap: 10 }}>
           <div className="row" style={{ gap: 8, flexWrap: 'wrap', alignItems: 'center' }}>
-            <select
-              value={outputId}
-              onChange={(e) => setOutputId(e.target.value)}
-              style={{ minWidth: 260 }}
-            >
+            <select value={outputId} onChange={(e) => setOutputId(e.target.value)} style={{ minWidth: 260 }}>
               <option value="">{loading ? 'Loading…' : '-- Select Output Raw Material --'}</option>
               {rms.map((r) => (
-                <option key={r.id} value={r.id}>
-                  {r.name}
-                </option>
+                <option key={r.id} value={r.id}>{r.name}</option>
               ))}
             </select>
 
             <input
-              type="number"
-              min="0.1"
-              step="0.1"
-              value={qtyKg}
-              onChange={(e) => setQtyKg(e.target.value)}
-              style={{ width: 140 }}
+              type="number" min="0.1" step="0.1" value={qtyKg}
+              onChange={(e) => setQtyKg(e.target.value)} style={{ width: 140 }}
               placeholder="Qty (kg)"
             />
             <input
-              placeholder="Note (optional)"
-              value={note}
-              onChange={(e) => setNote(e.target.value)}
-              style={{ minWidth: 220 }}
+              placeholder="Note (optional)" value={note}
+              onChange={(e) => setNote(e.target.value)} style={{ minWidth: 220 }}
             />
 
             <button
-              className="btn"
-              onClick={manufacture}
+              className="btn" onClick={manufacture}
               disabled={!outputId || qty <= 0 || manufacturing || insufficient}
               title={insufficient ? 'Insufficient stock' : ''}
             >
@@ -203,10 +213,9 @@ export default function BlendManufacture() {
             </button>
           </div>
 
+          {/* Recipe Breakdown */}
           <div className="card" style={{ margin: 0 }}>
-            <div className="hd">
-              <b>Recipe Breakdown</b>
-            </div>
+            <div className="hd"><b>Recipe Breakdown</b></div>
             <div className="bd" style={{ overflow: 'auto' }}>
               <table className="table">
                 <thead>
@@ -239,29 +248,52 @@ export default function BlendManufacture() {
                     </tr>
                   ))}
                   {rows.length === 0 && (
-                    <tr>
-                      <td colSpan={5} style={{ color: 'var(--muted)' }}>
-                        {outputId
-                          ? 'No active recipe defined for this output raw material'
-                          : 'Pick an output raw material to view recipe'}
-                      </td>
-                    </tr>
+                    <tr><td colSpan={5} style={{ color: 'var(--muted)' }}>
+                      {outputId ? 'No active recipe defined for this output raw material' : 'Pick an output raw material to view recipe'}
+                    </td></tr>
                   )}
                 </tbody>
               </table>
-              {insufficient && (
-                <div className="s" style={{ color: 'var(--error)', marginTop: 6 }}>
-                  One or more components are short. Add RM inward or reduce quantity.
-                </div>
-              )}
+              {insufficient && <div className="s" style={{ color: 'var(--error)', marginTop: 6 }}>
+                One or more components are short. Add RM inward or reduce quantity.
+              </div>}
+            </div>
+          </div>
+
+          {/* 🆕 Last 20 Blends */}
+          <div className="card" style={{ margin: 0 }}>
+            <div className="hd"><b>Last 20 Blends Manufactured</b></div>
+            <div className="bd" style={{ overflow: 'auto' }}>
+              <table className="table">
+                <thead>
+                  <tr>
+                    <th>Date</th>
+                    <th>Output RM</th>
+                    <th style={{ textAlign: 'right' }}>Qty (kg)</th>
+                    <th>Note</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {recent.map((r, i) => (
+                    <tr key={i}>
+                      <td>{new Date(r.created_at).toLocaleString()}</td>
+                      <td>{r.rm_name}</td>
+                      <td style={{ textAlign: 'right' }}>{r.qty}</td>
+                      <td>{r.note || '—'}</td>
+                    </tr>
+                  ))}
+                  {recent.length === 0 && (
+                    <tr><td colSpan={4} style={{ color: 'var(--muted)' }}>No blend manufacture records found</td></tr>
+                  )}
+                </tbody>
+              </table>
             </div>
           </div>
 
           <div className="s" style={{ color: 'var(--muted)' }}>
             Uses <code>blends</code>, <code>blend_components</code>, <code>v_blend_recipe_for_output</code>, and{' '}
             <code>v_raw_inventory</code>.<br />
-            Writes to <code>stock_ledger</code> with reasons <code>blend_consume</code> /{' '}
-            <code>blend_produce</code>. Manufacturing is strictly blocked if any component would go negative.
+            Writes to <code>stock_ledger</code> with reasons <code>blend_consume</code> / <code>blend_produce</code>.
           </div>
         </div>
       </div>
