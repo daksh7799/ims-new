@@ -15,13 +15,7 @@ export default function RawInwardReport() {
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState("");
 
-  // Compute start and end of day range
-  const startOfDay = new Date(date);
-  startOfDay.setHours(0, 0, 0, 0);
-  const endOfDay = new Date(date);
-  endOfDay.setHours(23, 59, 59, 999);
-
-  // 🔄 Load entries from Supabase view
+  // 🔄 Load entries from Supabase view — strict filter by purchase_date
   async function load() {
     setLoading(true);
     setError("");
@@ -32,10 +26,9 @@ export default function RawInwardReport() {
         .select(
           "id, bill_no, purchase_date, vendor_name, raw_material_name, qty, created_at"
         )
-        .gte("created_at", startOfDay.toISOString())
-        .lte("created_at", endOfDay.toISOString())
-        .neq("vendor_name", "Stock Adjustment") // 🚫 exclude stock adjustment vendor
-        .order("created_at", { ascending: true });
+        .eq("purchase_date", date) // ✅ exact date match (fixes timezone issue)
+        .neq("vendor_name", "Stock Adjustment")
+        .order("purchase_date", { ascending: true });
 
       if (error) throw error;
       setRows(data || []);
@@ -68,7 +61,7 @@ export default function RawInwardReport() {
     );
   }
 
-  // 🖨️ Print PDF directly
+  // 🖨️ Print PDF directly (in same tab)
   async function printPDF() {
     if (!rows.length) return alert("No data to print.");
 
@@ -119,7 +112,7 @@ export default function RawInwardReport() {
     }
   }
 
-  // ✅ Calculate total
+  // ✅ Calculate total quantity
   const totalQty = rows.reduce((sum, r) => sum + Number(r.qty || 0), 0);
 
   return (
