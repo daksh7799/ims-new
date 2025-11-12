@@ -19,6 +19,7 @@
     "jspdf": "^3.0.3",
     "jspdf-autotable": "^5.0.2",
     "lucide-react": "^0.542.0",
+    "papaparse": "^5.5.3",
     "qrcode": "^1.5.4",
     "react": "^19.1.1",
     "react-day-picker": "^9.11.1",
