@@ -1,7 +1,7 @@
-import { useEffect, useState } from 'react'
+import { useEffect, useMemo, useState } from 'react'
 import { supabase } from '../supabaseClient'
 
-/** ✅ Updated customer list (from your database actual names) **/
+/** ✅ Updated customer list (from your DB actual names) */
 const CUSTOMER_LIST = [
   'Flipkart Goshudh Cons Hyderabad',
   'Flipkart Goshudh Cons Bhiwandi',
@@ -34,22 +34,28 @@ const CUSTOMER_LIST = [
 
 const PERIODS = [3, 7, 15, 30]
 const CUSTOMER_PERIOD = 30
+const REFRESH_MS = 60_000
 
 export default function Dashboard() {
   const [loading, setLoading] = useState(true)
-
-  // time series
   const [sales7, setSales7] = useState([])
   const [returns7, setReturns7] = useState([])
 
-  // top sellers
+  const totalSales7 = useMemo(() => sumUnits(sales7), [sales7])
+  const totalReturns7 = useMemo(() => sumUnits(returns7), [returns7])
+  const returnRate = useMemo(
+    () => (totalSales7 ? ((totalReturns7 / totalSales7) * 100).toFixed(1) : '0.0'),
+    [totalReturns7, totalSales7]
+  )
+  const [salesGrowthPct, setSalesGrowthPct] = useState('0.0')
+
   const [period, setPeriod] = useState(7)
   const [top, setTop] = useState([])
-
-  // customers (fixed 30d)
   const [cust, setCust] = useState([])
+  const activeCustomers = useMemo(() => (cust || []).filter(c => c.units > 0).length, [cust])
 
-  /** -------------------- INITIAL LOAD -------------------- **/
+  const [autoRefresh, setAutoRefresh] = useState(true)
+
   async function loadInitial() {
     setLoading(true)
     try {
@@ -59,11 +65,9 @@ export default function Dashboard() {
       ])
       if (e1) throw e1
       if (e2) throw e2
-
       setSales7(fillLastNDays(s || [], 7))
       setReturns7(fillLastNDays(r || [], 7))
-
-      await Promise.all([loadTop(period), loadCustomersFixed()])
+      await Promise.all([loadTop(period), loadCustomersFixed(), computeSalesGrowth()])
     } catch (err) {
       alert(err.message)
     } finally {
@@ -71,12 +75,24 @@ export default function Dashboard() {
     }
   }
 
-  /** -------------------- LOAD TOP SELLERS -------------------- **/
+  async function computeSalesGrowth() {
+    const { data, error } = await supabase.rpc('dash_sales_last_days', { p_days: 14 })
+    if (error) {
+      console.warn('Sales growth error:', error.message)
+      setSalesGrowthPct('0.0')
+      return
+    }
+    const series = fillLastNDays(data || [], 14)
+    const last7 = series.slice(-7)
+    const prev7 = series.slice(0, 7)
+    const lastSum = sumUnits(last7)
+    const prevSum = sumUnits(prev7)
+    const pct = ((lastSum - prevSum) / (prevSum || 1)) * 100
+    setSalesGrowthPct(pct.toFixed(1))
+  }
+
   async function loadTop(p) {
-    const { data, error } = await supabase.rpc('dash_top_products', {
-      p_days: p,
-      p_limit: 20
-    })
+    const { data, error } = await supabase.rpc('dash_top_products', { p_days: p, p_limit: 20 })
     if (error) {
       console.warn('Top products error:', error.message)
       setTop([])
@@ -85,7 +101,6 @@ export default function Dashboard() {
     setTop(data || [])
   }
 
-  /** -------------------- LOAD CUSTOMER TOTALS -------------------- **/
   async function loadCustomersFixed() {
     const { data, error } = await supabase.rpc('dash_customer_totals', {
       p_days: CUSTOMER_PERIOD,
@@ -97,49 +112,82 @@ export default function Dashboard() {
       return
     }
 
-    const found = new Map(
-      (data || []).map((r) => [r.customer_name, Number(r.units || 0)])
-    )
-
-    setCust(
-      CUSTOMER_LIST.map((name) => ({
-        customer_name: name,
-        units: found.get(name) || 0
-      }))
-    )
+    const found = new Map((data || []).map((r) => [r.customer_name, Number(r.units || 0)]))
+    const normalized = CUSTOMER_LIST.map((name) => ({
+      customer_name: name,
+      units: found.get(name) || 0
+    }))
+    setCust(normalized)
   }
 
+  useEffect(() => { loadInitial() }, [])
+  useEffect(() => { loadTop(period) }, [period])
   useEffect(() => {
-    loadInitial()
-  }, [])
+    if (!autoRefresh) return
+    const id = setInterval(loadInitial, REFRESH_MS)
+    return () => clearInterval(id)
+  }, [autoRefresh, period])
 
-  useEffect(() => {
-    loadTop(period)
-  }, [period])
+  const combined = mergeSalesReturns(sales7, returns7)
+  const topMax = Math.max(1, ...((top || []).map(t => Number(t.units || 0))))
+  const custMax = Math.max(1, ...((cust || []).map(c => Number(c.units || 0))))
 
-  /** -------------------- UI -------------------- **/
   return (
-    <div className="grid">
-      {/* Two charts: Sales & Returns (7d) */}
-      <div className="grid cols-2">
-        <ChartCard title="Sales (Units) — Last 7 Days" data={sales7} />
-        <ChartCard title="Returns (Units) — Last 7 Days" data={returns7} />
+    <div className="grid" style={{ gap: 14 }}>
+      {/* === HERO KPIs === */}
+      <div className="grid" style={{ gridTemplateColumns: 'repeat(4, minmax(0,1fr))', gap: 12 }}>
+        <KPI title="Total Sales (7d)" value={totalSales7} color="var(--ok)" />
+        <KPI title="Total Returns (7d)" value={totalReturns7} color="var(--warn)" />
+        <KPI title="Active Customers (30d)" value={activeCustomers} color="var(--accent)" />
+        <KPI
+          title={`Sales Growth vs prev 7d`}
+          value={`${Number.isFinite(Number(salesGrowthPct)) ? salesGrowthPct : '0.0'}%`}
+          color={Number(salesGrowthPct) >= 0 ? 'var(--ok)' : 'var(--err)'}
+        />
       </div>
 
-      <div className="grid cols-2">
+      {/* === CONTROLS === */}
+      <div className="card">
+        <div className="hd">
+          <b>Dashboard Controls</b>
+          <div className="row" style={{ gap: 10 }}>
+            <label className="row" style={{ gap: 6 }}>
+              <input
+                type="checkbox"
+                checked={autoRefresh}
+                onChange={(e) => setAutoRefresh(e.target.checked)}
+              />
+              Auto refresh every 60s
+            </label>
+            <span className="badge">Return Rate: {returnRate}%</span>
+          </div>
+        </div>
+        <div className="bd" style={{ color: 'var(--muted)' }}>
+          Live overview of your operations — charts & tables refresh automatically when enabled.
+        </div>
+      </div>
+
+      {/* === COMBINED SALES/RETURNS CHART === */}
+      <div className="card">
+        <div className="hd">
+          <b>Sales vs Returns — Last 7 Days</b>
+          <span className="badge">Hover bars for instant info</span>
+        </div>
+        <div className="bd">
+          <CombinedBars data={combined} height={220} />
+        </div>
+      </div>
+
+      {/* === TWO PANES === */}
+      <div className="grid" style={{ gridTemplateColumns: 'repeat(2, minmax(0,1fr))', gap: 12 }}>
         {/* Top sellers */}
         <div className="card">
           <div className="hd">
-            <b>Top 20 Products</b>
-            <div className="row">
-              <select
-                value={period}
-                onChange={(e) => setPeriod(Number(e.target.value))}
-              >
+            <b>📦 Top 20 Products</b>
+            <div className="row" style={{ gap: 8 }}>
+              <select value={period} onChange={(e) => setPeriod(Number(e.target.value))}>
                 {PERIODS.map((p) => (
-                  <option key={p} value={p}>
-                    Last {p} days
-                  </option>
+                  <option key={p} value={p}>Last {p} days</option>
                 ))}
               </select>
             </div>
@@ -147,64 +195,42 @@ export default function Dashboard() {
           <div className="bd" style={{ overflow: 'auto', maxHeight: 360 }}>
             <table className="table">
               <thead>
-                <tr>
-                  <th>#</th>
-                  <th>Finished Good</th>
-                  <th style={{ textAlign: 'right' }}>Units</th>
-                </tr>
+                <tr><th>#</th><th>Finished Good</th><th style={{ textAlign: 'right' }}>Units</th></tr>
               </thead>
               <tbody>
                 {(top || []).map((r, idx) => (
-                  <tr key={r.finished_good_id || idx}>
+                  <tr key={r.finished_good_id || idx}
+                    style={{
+                      background: `linear-gradient(90deg, rgba(34,197,94,.15) ${(Number(r.units||0)/topMax)*85}%, transparent 0)`
+                    }}>
                     <td>{idx + 1}</td>
                     <td>{r.finished_good_name}</td>
-                    <td style={{ textAlign: 'right', fontWeight: 700 }}>
-                      {r.units}
-                    </td>
+                    <td style={{ textAlign: 'right', fontWeight: 700 }}>{r.units}</td>
                   </tr>
                 ))}
-                {(!top || top.length === 0) && (
-                  <tr>
-                    <td colSpan={3} style={{ color: 'var(--muted)' }}>
-                      No sales
-                    </td>
-                  </tr>
-                )}
               </tbody>
             </table>
           </div>
         </div>
 
-        {/* Customer totals (fixed 30d) */}
+        {/* Customers */}
         <div className="card">
-          <div className="hd">
-            <b>Customer Totals</b>
-            <span className="badge">Last {CUSTOMER_PERIOD} days</span>
-          </div>
+          <div className="hd"><b>👥 Customer Totals</b><span className="badge">Last 30 days</span></div>
           <div className="bd" style={{ overflow: 'auto', maxHeight: 360 }}>
             <table className="table">
               <thead>
-                <tr>
-                  <th>Customer</th>
-                  <th style={{ textAlign: 'right' }}>Units</th>
-                </tr>
+                <tr><th>Customer</th><th style={{ textAlign: 'right' }}>Units</th></tr>
               </thead>
               <tbody>
                 {(cust || []).map((c) => (
-                  <tr key={c.customer_name}>
+                  <tr key={c.customer_name}
+                    style={{
+                      background: `linear-gradient(90deg, rgba(59,130,246,.15) ${(Number(c.units||0)/custMax)*85}%, transparent 0)`
+                    }}>
                     <td>{c.customer_name}</td>
-                    <td
-                      style={{ textAlign: 'right', fontWeight: 700 }}
-                    >{c.units}</td>
+                    <td style={{ textAlign: 'right', fontWeight: 700 }}>{c.units}</td>
                   </tr>
                 ))}
-                {(!cust || cust.length === 0) && (
-                  <tr>
-                    <td colSpan={2} style={{ color: 'var(--muted)' }}>
-                      No data
-                    </td>
-                  </tr>
-                )}
               </tbody>
             </table>
           </div>
@@ -216,131 +242,95 @@ export default function Dashboard() {
   )
 }
 
-/* ---------- chart card ---------- */
-function ChartCard({ title, data }) {
+/* ---------- KPI Card ---------- */
+function KPI({ title, value, color }) {
   return (
-    <div className="card">
-      <div className="hd"><b>{title}</b></div>
-      <div className="bd">
-        <Bar7 data={data} height={200} />
-        <div className="s" style={{ marginTop: 8 }}>Hover any bar for exact units.</div>
-      </div>
+    <div className="card" style={{ padding: '12px 14px' }}>
+      <div className="s" style={{ color: 'var(--muted)' }}>{title}</div>
+      <div style={{ fontSize: 24, fontWeight: 800, color, lineHeight: 1.1 }}>{fmtNum(value)}</div>
     </div>
   )
 }
 
-/* Robust 7-day bar chart with custom tooltip */
-function Bar7({ data, height = 180 }) {
-  const max = Math.max(1, ...data.map((d) => Number(d.units || 0)))
-  const [hover, setHover] = useState(null) // {x,y,label}
-
+/* ---------- Combined Bars (Fast Hover) ---------- */
+function CombinedBars({ data, height = 220 }) {
+  const max = Math.max(1, ...data.map(d => Math.max(Number(d.sales||0), Number(d.returns||0))))
   return (
-    <div style={{ position: 'relative' }}>
-      {hover && (
-        <div
-          style={{
-            position: 'absolute',
-            left: hover.x,
-            top: hover.y - 34,
-            transform: 'translate(-50%, -100%)',
-            background: 'var(--surface)',
-            border: '1px solid var(--border)',
-            padding: '6px 8px',
-            borderRadius: 8,
-            fontSize: 12,
-            whiteSpace: 'nowrap',
-            boxShadow: 'var(--shadow-1)',
-            pointerEvents: 'none',
-            zIndex: 5
-          }}
-        >
-          <b>{hover.label}</b>
-        </div>
-      )}
-
-      <div
-        style={{
-          display: 'grid',
-          gridTemplateColumns: 'repeat(7, 1fr)',
-          gap: 12,
-          alignItems: 'end',
-          height
-        }}
-        onMouseLeave={() => setHover(null)}
-      >
-        {data.map((d, idx) => {
-          const units = Number(d.units || 0)
-          const h = (units / max) * (height - 36)
-          return (
-            <div key={idx} style={{ display: 'grid', alignItems: 'end' }}>
-              <div
-                role="button"
-                onMouseMove={(e) => placeTip(e, setHover, d, units)}
-                onMouseEnter={(e) => placeTip(e, setHover, d, units)}
-                onMouseLeave={() => setHover(null)}
+    <div style={{ display: 'grid', gridTemplateColumns: 'repeat(7,1fr)', gap: 14, alignItems: 'end', height }}>
+      {data.map((d, idx) => {
+        const hSales = (Number(d.sales||0) / max) * (height - 36)
+        const hReturns = (Number(d.returns||0) / max) * (height - 36)
+        return (
+          <div key={idx} style={{ display: 'grid', alignItems: 'end', gap: 6 }}>
+            <div className="row" style={{ gap: 6, alignItems: 'end', position: 'relative' }}>
+              <div className="bar"
+                data-tip={`${formatDayLabel(d.sale_date)} — Sales: ${d.sales}`}
                 style={{
-                  height: Math.max(6, h),
-                  background:
-                    'linear-gradient(180deg, rgba(106,167,255,.85), rgba(139,92,246,.85))',
-                  border: '1px solid #2a3150',
-                  borderRadius: 10,
-                  boxShadow: 'var(--shadow-1)',
-                  transition: 'height .15s ease'
-                }}
-              />
-              <div className="s" style={{ textAlign: 'center', marginTop: 6 }}>
-                {formatDayShort(d.sale_date)}
-              </div>
+                  height: Math.max(6, hSales),
+                  flex: 1,
+                  background: 'linear-gradient(180deg, rgba(34,197,94,.85), rgba(16,185,129,.85))',
+                  border: '1px solid #1b3c2d',
+                  borderRadius: 8,
+                  position: 'relative'
+                }}/>
+              <div className="bar"
+                data-tip={`${formatDayLabel(d.sale_date)} — Returns: ${d.returns}`}
+                style={{
+                  height: Math.max(6, hReturns),
+                  flex: 1,
+                  background: 'linear-gradient(180deg, rgba(239,68,68,.85), rgba(248,113,113,.85))',
+                  border: '1px solid #4a1f1f',
+                  borderRadius: 8,
+                  position: 'relative'
+                }}/>
             </div>
-          )
-        })}
-      </div>
+            <div className="s" style={{ textAlign: 'center' }}>{formatDayShort(d.sale_date)}</div>
+          </div>
+        )
+      })}
     </div>
   )
 }
 
-function placeTip(e, setHover, d, units) {
-  const grid = e.currentTarget.parentElement.parentElement.getBoundingClientRect()
-  const rect = e.currentTarget.getBoundingClientRect()
-  setHover({
-    x: rect.left + rect.width / 2 - grid.left,
-    y: rect.top - grid.top,
-    label: `${formatDayLabel(d.sale_date)} — ${units} units`
-  })
+/* ---------- Helpers ---------- */
+function sumUnits(rows) {
+  return (rows || []).reduce((n, r) => n + Number(r.units || 0), 0)
 }
-
-/* ---------- helpers ---------- */
+function mergeSalesReturns(sales, returns) {
+  const map = new Map()
+  ;(sales || []).forEach(s => map.set(s.sale_date, { sale_date: s.sale_date, sales: Number(s.units||0), returns: 0 }))
+  ;(returns || []).forEach(r => {
+    const row = map.get(r.sale_date) || { sale_date: r.sale_date, sales: 0, returns: 0 }
+    row.returns = Number(r.units || 0)
+    map.set(r.sale_date, row)
+  })
+  return Array.from(map.values()).sort((a,b)=>a.sale_date.localeCompare(b.sale_date))
+}
 function fillLastNDays(rows, n) {
   const today = new Date()
   const map = new Map()
-  ;(rows || []).forEach((r) => {
-    const key = (r.sale_date || '').slice(0, 10)
-    map.set(key, Number(r.units || 0))
+  ;(rows||[]).forEach(r => {
+    const key = (r.sale_date || '').slice(0,10)
+    map.set(key, Number(r.units||0))
   })
   const out = []
-  for (let i = n - 1; i >= 0; i--) {
-    const d = new Date(today)
-    d.setDate(today.getDate() - i)
-    const key = d.toISOString().slice(0, 10)
+  for (let i=n-1; i>=0; i--) {
+    const d = new Date(today); d.setDate(today.getDate()-i)
+    const key = d.toISOString().slice(0,10)
     out.push({ sale_date: key, units: map.get(key) || 0 })
   }
   return out
 }
-
-function formatDayShort(iso) {
-  try {
-    const d = new Date(iso + 'T00:00:00')
-    return d.toLocaleDateString(undefined, { weekday: 'short' })
-  } catch {
-    return iso
-  }
+function fmtNum(v) {
+  const n = Number(v)
+  if (!Number.isFinite(n)) return String(v ?? '0')
+  return n.toLocaleString()
 }
-
+function formatDayShort(iso) {
+  try { return new Date(iso + 'T00:00:00').toLocaleDateString(undefined, { weekday: 'short' }) }
+  catch { return iso }
+}
 function formatDayLabel(iso) {
-  try {
-    const d = new Date(iso + 'T00:00:00')
-    return d.toLocaleDateString(undefined, { weekday: 'short', month: 'short', day: 'numeric' })
-  } catch {
-    return iso
-  }
+  try { return new Date(iso + 'T00:00:00').toLocaleDateString(undefined, { weekday: 'short', month: 'short', day: 'numeric' }) }
+  catch { return iso }
 }

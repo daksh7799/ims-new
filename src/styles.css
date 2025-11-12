@@ -220,3 +220,127 @@ body[data-theme="light"]{
 .fg-scroll::-webkit-scrollbar-track {
   background: transparent;
 }
+.bar:hover::after {
+  content: attr(data-tip);
+  position: absolute;
+  top: -30px;
+  left: 50%;
+  transform: translateX(-50%);
+  background: var(--surface);
+  border: 1px solid var(--border);
+  padding: 4px 8px;
+  border-radius: 6px;
+  font-size: 12px;
+  white-space: nowrap;
+  box-shadow: var(--shadow-1);
+  z-index: 10;
+}
+/* =========================================
+   Dashboard Enhancements — IMS
+   ========================================= */
+
+/* --- KPI Cards --- */
+.card.kpi {
+  padding: 12px 14px;
+  transition: transform 0.15s ease;
+}
+.card.kpi:hover {
+  transform: scale(1.03);
+}
+.kpi-value {
+  font-size: 26px;
+  font-weight: 800;
+  line-height: 1.1;
+  transition: color 0.3s ease;
+}
+.kpi-arrow {
+  font-size: 20px;
+  margin-left: 4px;
+}
+
+/* --- Vertical Bar Chart --- */
+.chart-area {
+  display: flex;
+  justify-content: space-between;
+  align-items: flex-end;
+  height: 240px;
+  padding: 8px 12px;
+}
+.chart-col {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 6px;
+}
+.bar {
+  width: 20px;
+  border-radius: 8px;
+  transition: height 0.2s ease, filter 0.15s;
+  position: relative;
+}
+.bar.green {
+  background: linear-gradient(180deg, rgba(34,197,94,.85), rgba(16,185,129,.85));
+  border: 1px solid #1b3c2d;
+}
+.bar.red {
+  background: linear-gradient(180deg, rgba(239,68,68,.85), rgba(248,113,113,.85));
+  border: 1px solid #4a1f1f;
+}
+.bar:hover {
+  filter: brightness(1.2);
+}
+.bar:hover::after {
+  content: attr(data-tip);
+  position: absolute;
+  top: -28px;
+  left: 50%;
+  transform: translateX(-50%);
+  background: var(--surface);
+  border: 1px solid var(--border);
+  padding: 4px 8px;
+  border-radius: 6px;
+  font-size: 12px;
+  white-space: nowrap;
+  color: var(--text);
+  box-shadow: var(--shadow-1);
+  z-index: 100;
+}
+
+/* --- Chart Labels --- */
+.chart-label {
+  font-size: 12px;
+  color: var(--muted);
+}
+.chart-area {
+  display: flex;
+  justify-content: space-between;
+  align-items: flex-end;
+  height: 240px;
+  padding: 8px 12px;
+}
+.chart-col {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 6px;
+}
+.bar {
+  width: 28px;
+  border-radius: 8px;
+  transition: height 0.2s ease, filter 0.15s;
+}
+.bar.green {
+  background: linear-gradient(180deg, rgba(34,197,94,.85), rgba(16,185,129,.85));
+  border: 1px solid #1b3c2d;
+}
+.bar.red {
+  background: linear-gradient(180deg, rgba(239,68,68,.85), rgba(248,113,113,.85));
+  border: 1px solid #4a1f1f;
+}
+.bar:hover { filter: brightness(1.2); }
+.chart-label {
+  font-size: 12px;
+  color: var(--muted);
+}
