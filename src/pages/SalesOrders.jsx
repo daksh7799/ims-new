@@ -51,6 +51,13 @@ async function getBinsForFgNames(names){
   return agg
 }
 
+function extractBrand(fgName) {
+  if (!fgName) return 'UNKNOWN'
+  // take the first token (letters/numbers/&/-) before a space or punctuation, uppercase it
+  const m = String(fgName || '').trim().match(/^([A-Za-z0-9&-]+)/)
+  return (m && m[1]) ? String(m[1]).toUpperCase() : String(fgName).split(' ')[0].toUpperCase()
+}
+
 export default function SalesOrders(){
   const [orders,setOrders]=useState([])
   const [customers,setCustomers]=useState([])
@@ -199,53 +206,129 @@ export default function SalesOrders(){
     })))
   }
 
-  async function printSO(order){
+  // ---- PRINT: grouped-by-brand, denser (~50 rows/page), darker borders, qty left-aligned,
+  //          and FINISHED GOODS sorted alphabetically within each brand ----
+  async function printSO(order, { onlyPending = true } = {}) {
     try{
       const [{ default: jsPDF }, { default: autoTable }] = await Promise.all([
         import('jspdf'),
         import('jspdf-autotable')
       ])
-      const doc = new jsPDF()
-      doc.setFontSize(14)
-      doc.text(`Sales Order ${order.so_number || order.id}`, 14, 16)
-      doc.setFontSize(11)
-      doc.text(`Customer: ${order.customer_name || '-'}`, 14, 24)
 
-      let currentY = 31
+      // use points for fine control and generate A4
+      const doc = new jsPDF({ unit: 'pt', format: 'a4' })
+      const pageWidth = doc.internal.pageSize.getWidth()
+      const pageHeight = doc.internal.pageSize.getHeight()
+      const leftMargin = 12
+      const rightMargin = 12
+      const topMargin = 14
+      const usableWidth = pageWidth - leftMargin - rightMargin
+
+      // header
+      doc.setFontSize(14)
+      doc.text(`Sales Order ${order.so_number || order.id}`, leftMargin, topMargin + 6)
+      doc.setFontSize(11)
+      doc.text(`Customer: ${order.customer_name || '-'}`, leftMargin, topMargin + 22)
+
+      let currentY = topMargin + 34
       if (order.note) {
-        const splitNote = doc.splitTextToSize(`Note: ${order.note}`, 180)
-        doc.text(splitNote, 14, currentY)
-        currentY += splitNote.length * 6
+        const splitNote = doc.splitTextToSize(`Note: ${order.note}`, usableWidth)
+        doc.setFontSize(10)
+        doc.text(splitNote, leftMargin, currentY)
+        currentY += splitNote.length * 10
       }
       if(order.created_at){
-        doc.text(`Created: ${new Date(order.created_at).toLocaleString()}`, 14, currentY)
-        currentY += 7
+        doc.setFontSize(10)
+        doc.text(`Created: ${new Date(order.created_at).toLocaleString()}`, leftMargin, currentY)
+        currentY += 12
       }
 
+      // fetch fresh lines
       const { data: lines } = await supabase
         .from('v_so_lines')
         .select('*')
         .eq('sales_order_id', order.id)
-      const fgNames = (lines||[]).map(l=>l.finished_good_name).filter(Boolean)
+      let rows = (lines||[])
+      if (onlyPending) rows = rows.filter(l => Number(l.qty_shipped || 0) < Number(l.qty_ordered || 0))
+      if (!rows.length) { alert('No lines to print'); return }
+
+      const fgNames = rows.map(l=>l.finished_good_name).filter(Boolean)
       const binsByFg = await getBinsForFgNames(fgNames)
 
-      const body = (lines||[]).map(l=>{
-        const fgName = l.finished_good_name || ''
-        const bins = binsByFg[normalizeName(fgName)] || []
-        const binsText = bins.length
-          ? bins.map(b => `${b.bin_code}: ${b.qty}`).join(', ')
-          : '—'
-        return [fgName, Number(l.qty_ordered||0), binsText]
-      })
+      // group by brand
+      const byBrand = {}
+      for (const l of rows) {
+        const brand = extractBrand(l.finished_good_name)
+        if (!byBrand[brand]) byBrand[brand] = []
+        byBrand[brand].push(l)
+      }
+      const brands = Object.keys(byBrand).sort((a,b)=>a.localeCompare(b))
 
-      autoTable(doc, {
-        startY: currentY + 5,
-        head: [['Finished Good', 'Ordered', 'Bins']],
-        body,
-        styles: { fontSize: 10, cellPadding: 2 },
-        columnStyles: { 1: { halign:'right', cellWidth: 25 } }
-      })
+      // tuned column widths: finished good reduced, qty narrow, bins increased
+      const col1 = 44                              // ordered (narrow)
+      const col0 = Math.floor(usableWidth * 0.56) // finished good (reduced)
+      const col2 = usableWidth - col0 - col1      // bins (increased)
 
+      for (const brand of brands) {
+        // brand header
+        doc.setFontSize(11)
+        doc.text(brand, leftMargin, currentY + 12)
+        doc.setFontSize(9)
+
+        // sort finished goods alphabetically (case-insensitive)
+        const items = (byBrand[brand] || []).slice().sort((a, b) => {
+          const A = String(a.finished_good_name || '').toLowerCase()
+          const B = String(b.finished_good_name || '').toLowerCase()
+          return A.localeCompare(B)
+        })
+
+        const body = items.map(l=>{
+          const fgName = l.finished_good_name || ''
+          const bins = binsByFg[normalizeName(fgName)] || []
+          const binsText = bins.length ? bins.map(b => `${b.bin_code}: ${b.qty}`).join(', ') : '—'
+          return [fgName, String(Number(l.qty_ordered||0)), binsText]
+        })
+
+        autoTable(doc, {
+          startY: currentY + 16,
+          margin: { left: leftMargin, right: rightMargin },
+          head: [['Finished Good', 'Ordered', 'Bins']],
+          body,
+          styles: {
+            fontSize: 9,         // readable
+            cellPadding: 1.2,    // tighter rows
+            overflow: 'ellipsize',
+            valign: 'middle',
+            lineWidth: 0.6,      // darker/thicker border
+            lineColor: [110,110,110] // darker gray border
+          },
+          headStyles: { fillColor: [250,250,250], textColor: 20, fontStyle: 'bold', halign: 'left', fontSize:9 },
+          columnStyles: {
+            0: { cellWidth: col0, overflow: 'ellipsize' },         // finished good (reduced)
+            1: { halign: 'left', cellWidth: col1 },                // ordered now LEFT aligned
+            2: { cellWidth: col2, overflow: 'ellipsize' }          // bins (increased)
+          },
+          tableWidth: 'auto',
+          theme: 'grid',
+          willDrawCell: (data) => {
+            if (data.section === 'body') {
+              data.cell.styles.minCellHeight = 8
+            }
+          }
+        })
+
+        // move cursor after table
+        currentY = doc.lastAutoTable?.finalY || (currentY + 16 + body.length * 9)
+        currentY += 6
+
+        // page break if needed
+        if (currentY > pageHeight - 36) {
+          doc.addPage()
+          currentY = topMargin + 8
+        }
+      }
+
+      // create blob + open print dialog; keep iframe so print dialog doesn't auto-close
       const blob = doc.output('blob')
       const blobURL = URL.createObjectURL(blob)
       const iframe = document.createElement('iframe')
@@ -258,8 +341,9 @@ export default function SalesOrders(){
       iframe.src = blobURL
       document.body.appendChild(iframe)
       iframe.onload = function () {
-        iframe.contentWindow.focus()
-        iframe.contentWindow.print()
+        try { iframe.contentWindow.focus(); iframe.contentWindow.print() }
+        catch(e){ doc.save(`SO_${order.so_number || order.id}.pdf`) }
+        // leave iframe in DOM so user closes print dialog manually
       }
     }catch(err){
       alert('Failed to print: ' + (err?.message || String(err)))
