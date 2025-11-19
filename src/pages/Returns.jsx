@@ -115,6 +115,41 @@ export default function Returns() {
     );
   }, [rows, q]);
 
+  // helper: focus+select an input only if user hasn't focused something else
+  function tryFocusInput(ref) {
+    requestAnimationFrame(() => {
+      try {
+        const active = document.activeElement;
+        // if user intentionally focused another interactive control, don't steal it
+        const activeIsInteractive =
+          active &&
+          (active.tagName === "INPUT" ||
+            active.tagName === "TEXTAREA" ||
+            active.tagName === "BUTTON" ||
+            active.getAttribute("role") === "button" ||
+            active.isContentEditable);
+
+        // if active is the document body (or nothing) we can safely focus the scanner input
+        if (activeIsInteractive && active !== ref.current) {
+          // user is interacting elsewhere — do not steal focus
+          return;
+        }
+
+        const el = ref.current;
+        if (el) {
+          try {
+            el.focus({ preventScroll: true });
+            if (el.select) el.select();
+          } catch (e) {
+            el.focus();
+          }
+        }
+      } catch (e) {
+        // ignore
+      }
+    });
+  }
+
   /** ---------------- RETURN BY SCAN ---------------- **/
   async function doReturnByScan(code) {
     const barcode = (code || "").trim();
@@ -126,15 +161,19 @@ export default function Returns() {
         p_note: scanNote || null,
       });
       if (error) throw error;
+
+      // SUCCESS -> clear input
       showToast(`Packet ${barcode} returned`, "ok");
       setScanCode("");
       setScanNote("");
       loadRows();
     } catch (err) {
+      // ERROR -> keep scanCode so user can edit it
       showToast(err.message, "err");
     } finally {
       setScanBusy(false);
-      setTimeout(() => scanRef.current?.focus(), 0);
+      // attempt to focus/select but don't force if user is interacting elsewhere
+      tryFocusInput(scanRef);
     }
   }
 
@@ -361,15 +400,19 @@ export default function Returns() {
         p_note: scrapNote || null,
       });
       if (error) throw error;
+
+      // SUCCESS -> clear input
       showToast(`Scrapped ${barcode}`, "ok");
       setScrapCode("");
       setScrapNote("");
       loadRows();
     } catch (err) {
+      // ERROR -> keep scrapCode so user can edit it
       showToast(err.message, "err");
     } finally {
       setScrapBusy(false);
-      setTimeout(() => scrapRef.current?.focus(), 0);
+      // attempt to focus/select but don't force if user is interacting elsewhere
+      tryFocusInput(scrapRef);
     }
   }
 
@@ -445,6 +488,7 @@ export default function Returns() {
               <button
                 className="btn"
                 onClick={() => doReturnByScan(scanCode)}
+                onMouseDown={(e) => e.preventDefault()} // prevent button from grabbing focus
                 disabled={scanBusy}
               >
                 {scanBusy ? "Working…" : "Accept Return"}
@@ -558,17 +602,14 @@ export default function Returns() {
                 <div
                   className="bd grid"
                   style={{
-                    gridTemplateColumns:
-                      "repeat(auto-fill,minmax(240px,1fr))",
+                    gridTemplateColumns: "repeat(auto-fill,minmax(240px,1fr))",
                   }}
                 >
                   {nbCreated.map((x) => (
                     <div key={x.code} className="card">
                       <div className="bd">
                         <div style={{ fontWeight: 600 }}>{x.name}</div>
-                        <code style={{ wordBreak: "break-all" }}>
-                          {x.code}
-                        </code>
+                        <code style={{ wordBreak: "break-all" }}>{x.code}</code>
                       </div>
                     </div>
                   ))}
@@ -600,6 +641,7 @@ export default function Returns() {
               <button
                 className="btn"
                 onClick={() => doScrapByScan(scrapCode)}
+                onMouseDown={(e) => e.preventDefault()}
                 disabled={scrapBusy}
               >
                 {scrapBusy ? "Working…" : "Scrap"}
