@@ -9,6 +9,7 @@ export default function RMInventory() {
   const [q, setQ] = useState('')
   const [minQty, setMinQty] = useState('')
   const [maxQty, setMaxQty] = useState('')
+  const [showLowOnly, setShowLowOnly] = useState(false)
 
   async function load() {
     setLoading(true)
@@ -25,23 +26,33 @@ export default function RMInventory() {
     setRows(data || [])
     setLoading(false)
   }
-  useEffect(() => { load() }, [])
+
+  useEffect(() => {
+    load()
+  }, [])
 
   const filtered = useMemo(() => {
     const qq = q.trim().toLowerCase()
     const min = minQty === '' ? -Infinity : Number(minQty)
     const max = maxQty === '' ? Infinity : Number(maxQty)
+
     return (rows || []).filter(r => {
       const matchQ =
         !qq ||
         String(r.raw_material_name || '').toLowerCase().includes(qq) ||
         String(r.unit || '').toLowerCase().includes(qq)
-      const qty = Number(r.qty_on_hand || 0)
-      return matchQ && qty >= min && qty <= max
-    })
-  }, [rows, q, minQty, maxQty])
 
-  // ✅ Low count based on backend threshold
+      const qty = Number(r.qty_on_hand || 0)
+      const thr = Number(r.low_threshold ?? 0)
+
+      const qtyOK = qty >= min && qty <= max
+      const lowMatch = !showLowOnly || (thr > 0 && qty <= thr)
+
+      return matchQ && qtyOK && lowMatch
+    })
+  }, [rows, q, minQty, maxQty, showLowOnly])
+
+  // ✅ Low count based on backend threshold (counts within current filtered list)
   const lowCount = filtered.filter(r => {
     const qty = Number(r.qty_on_hand || 0)
     const thr = Number(r.low_threshold ?? 0)
@@ -70,7 +81,10 @@ export default function RMInventory() {
 
         <div className="bd">
           {/* 🔎 Filters */}
-          <div className="row" style={{ marginBottom: 10 }}>
+          <div
+            className="row"
+            style={{ marginBottom: 10, display: 'flex', alignItems: 'center', gap: 8 }}
+          >
             <input
               placeholder="Search material / unit…"
               value={q}
@@ -90,6 +104,17 @@ export default function RMInventory() {
               onChange={e => setMaxQty(e.target.value)}
               style={{ width: 110 }}
             />
+
+            {/* Toggle button for Low only */}
+            <button
+              className={showLowOnly ? 'btn' : 'btn ghost'}
+              onClick={() => setShowLowOnly(s => !s)}
+              style={{ marginLeft: 8 }}
+              title={showLowOnly ? 'Showing only low items — click to show all' : 'Show only low items'}
+            >
+              {showLowOnly ? 'Showing: Low only' : 'Show Low Only'}
+            </button>
+
             <button className="btn ghost" onClick={load} disabled={loading}>
               {loading ? 'Refreshing…' : 'Refresh'}
             </button>
