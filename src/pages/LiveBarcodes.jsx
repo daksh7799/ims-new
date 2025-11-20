@@ -11,60 +11,81 @@ function fmtDate(d) {
   return new Date(t).toLocaleString(); // auto local time (IST in browser)
 }
 
-const PAGE_SIZE = 1000; // ✅ Show 1000 per page
+const PAGE_SIZE = 1000; // rows per UI page
+const FETCH_CHUNK = 1000; // rows per Supabase request (fetch all in chunks)
 
 export default function LiveBarcodes() {
   const [rows, setRows] = useState([]);
-  const [totalCount, setTotalCount] = useState(0);
+  const [totalCount, setTotalCount] = useState(0); // total loaded
   const [page, setPage] = useState(1);
   const [loading, setLoading] = useState(true);
   const [err, setErr] = useState("");
 
   const [q, setQ] = useState("");
-  const [onlyNoBarcode, setOnlyNoBarcode] = useState(false);
+  // all / available / returned / returned_no_barcode
+  const [statusFilter, setStatusFilter] = useState("all");
   const [fromDate, setFromDate] = useState("");
   const [toDate, setToDate] = useState("");
   const [selected, setSelected] = useState(() => new Set());
+
+  // Sort direction for Returned column
+  const [returnedSortDir, setReturnedSortDir] = useState("desc"); // asc / desc
+
   const navigate = useNavigate();
 
-  /** -------------------- LOAD -------------------- **/
+  /** -------------------- LOAD (ALL ROWS IN CHUNKS) -------------------- **/
   async function load() {
     setLoading(true);
     setErr("");
     try {
-      const from = (page - 1) * PAGE_SIZE;
-      const to = from + PAGE_SIZE - 1;
+      const all = [];
+      let from = 0;
 
-      // get total count first
-      const { count } = await supabase
-        .from("v_live_barcodes_enriched")
-        .select("*", { count: "exact", head: true })
-        .in("status", ["available", "returned"]);
+      // fetch in chunks until we get less than FETCH_CHUNK rows
+      // or no more rows
+      // status limited to available + returned
+      // (we’ll further filter on the frontend)
+      // NOTE: no count here; we just use all.length at the end
+      // to know how many we loaded.
+      // eslint-disable-next-line no-constant-condition
+      while (true) {
+        const to = from + FETCH_CHUNK - 1;
 
-      setTotalCount(count || 0);
+        const { data, error } = await supabase
+          .from("v_live_barcodes_enriched")
+          .select("*")
+          .in("status", ["available", "returned"])
+          .range(from, to);
 
-      // fetch actual page slice
-      const { data, error } = await supabase
-        .from("v_live_barcodes_enriched")
-        .select("*")
-        .in("status", ["available", "returned"])
-        .order("id", { ascending: false })
-        .range(from, to);
+        if (error) {
+          throw error;
+        }
 
-      if (error) {
-        console.error(error);
-        setErr(error.message || String(error));
-        setRows([]);
-      } else {
-        setRows(data || []);
+        if (!data || data.length === 0) {
+          break;
+        }
+
+        all.push(...data);
+
+        if (data.length < FETCH_CHUNK) {
+          // last partial page -> done
+          break;
+        }
+
+        from += FETCH_CHUNK;
       }
+
+      setRows(all);
+      setTotalCount(all.length);
     } catch (e) {
       console.error(e);
       setErr(String(e));
       setRows([]);
+      setTotalCount(0);
     } finally {
       setLoading(false);
       setSelected(new Set());
+      setPage(1); // reset to first page when data refreshes
     }
   }
 
@@ -75,55 +96,109 @@ export default function LiveBarcodes() {
 
     const c1 = supabase
       .channel("rt:packets")
-      .on("postgres_changes", { event: "*", schema: "public", table: "packets" }, load)
+      .on(
+        "postgres_changes",
+        { event: "*", schema: "public", table: "packets" },
+        load
+      )
       .subscribe();
 
     const c2 = supabase
       .channel("rt:ledger")
-      .on("postgres_changes", { event: "*", schema: "public", table: "stock_ledger" }, load)
+      .on(
+        "postgres_changes",
+        { event: "*", schema: "public", table: "stock_ledger" },
+        load
+      )
       .subscribe();
 
     return () => {
       clearInterval(timer);
-      try { supabase.removeChannel(c1); } catch {}
-      try { supabase.removeChannel(c2); } catch {}
+      try {
+        supabase.removeChannel(c1);
+      } catch {}
+      try {
+        supabase.removeChannel(c2);
+      } catch {}
     };
-  }, [page]);
+  }, []);
 
-  /** -------------------- FILTERING -------------------- **/
+  /** -------------------- RESET PAGE WHEN FILTERS CHANGE -------------------- **/
+  useEffect(() => {
+    setPage(1);
+  }, [q, statusFilter, fromDate, toDate]);
+
+  /** -------------------- FILTERING + SORTING -------------------- **/
   const filtered = useMemo(() => {
     const qq = q.trim().toLowerCase();
 
-    return (rows || []).filter((r) => {
-      if (onlyNoBarcode && !r.is_no_barcode_return) return false;
+    let result = (rows || []).filter((r) => {
+      // Status + No-barcode combined filter
+      if (statusFilter === "available" && r.status !== "available") return false;
+      if (statusFilter === "returned" && r.status !== "returned") return false;
+      if (
+        statusFilter === "returned_no_barcode" &&
+        !(r.status === "returned" && r.is_no_barcode_return)
+      ) {
+        return false;
+      }
 
       const pd = r.produced_at ? new Date(r.produced_at) : null;
 
-      // ✅ Date-time filtering accurate to seconds
+      // Date-time filtering accurate to seconds (using produced_at)
       if (fromDate) {
         const f = new Date(fromDate);
         if (!pd || pd < f) return false;
       }
       if (toDate) {
         const t = new Date(toDate);
-        // include up to the exact second
         if (!pd || pd > t) return false;
       }
 
-      return (
-        !qq ||
-        r.packet_code?.toLowerCase().includes(qq) ||
-        (r.finished_good_name || "").toLowerCase().includes(qq) ||
-        (r.bin_code || "").toLowerCase().includes(qq)
-      );
+      // Search filter
+      if (
+        qq &&
+        !(
+          r.packet_code?.toLowerCase().includes(qq) ||
+          (r.finished_good_name || "").toLowerCase().includes(qq) ||
+          (r.bin_code || "").toLowerCase().includes(qq)
+        )
+      ) {
+        return false;
+      }
+
+      return true;
     });
-  }, [rows, q, onlyNoBarcode, fromDate, toDate]);
+
+    // Sort by returned_at with asc/desc toggle
+    result = [...result].sort((a, b) => {
+      const ta = a.returned_at ? new Date(a.returned_at).getTime() : 0;
+      const tb = b.returned_at ? new Date(b.returned_at).getTime() : 0;
+
+      // Keep nulls at bottom
+      if (!ta && !tb) return 0;
+      if (!ta) return 1;
+      if (!tb) return -1;
+
+      return returnedSortDir === "asc" ? ta - tb : tb - ta;
+    });
+
+    return result;
+  }, [rows, q, statusFilter, fromDate, toDate, returnedSortDir]);
+
+  /** -------------------- CLIENT-SIDE PAGINATION (on filtered) -------------------- **/
+  const totalPages = Math.max(1, Math.ceil(filtered.length / PAGE_SIZE));
+  const pageRows = useMemo(() => {
+    const start = (page - 1) * PAGE_SIZE;
+    const end = start + PAGE_SIZE;
+    return filtered.slice(start, end);
+  }, [filtered, page]);
 
   /** -------------------- SELECTION -------------------- **/
   const allVisibleSelected =
-    filtered.length > 0 && filtered.every((r) => selected.has(r.packet_code));
+    pageRows.length > 0 && pageRows.every((r) => selected.has(r.packet_code));
   const someVisibleSelected =
-    filtered.some((r) => selected.has(r.packet_code)) && !allVisibleSelected;
+    pageRows.some((r) => selected.has(r.packet_code)) && !allVisibleSelected;
 
   function toggleRow(code, checked) {
     setSelected((prev) => {
@@ -136,8 +211,8 @@ export default function LiveBarcodes() {
 
   function toggleVisible(checked) {
     const next = new Set(selected);
-    if (checked) filtered.forEach((r) => next.add(r.packet_code));
-    else filtered.forEach((r) => next.delete(r.packet_code));
+    if (checked) pageRows.forEach((r) => next.add(r.packet_code));
+    else pageRows.forEach((r) => next.delete(r.packet_code));
     setSelected(next);
   }
 
@@ -146,11 +221,13 @@ export default function LiveBarcodes() {
     setQ("");
     setFromDate("");
     setToDate("");
-    setOnlyNoBarcode(false);
+    setStatusFilter("all");
+    setPage(1);
   }
 
   /** -------------------- EXPORT / PRINT -------------------- **/
   function exportRows() {
+    // Export ALL filtered rows (across pages)
     const data = filtered.map((r) => ({
       barcode: r.packet_code,
       item: r.finished_good_name,
@@ -182,8 +259,12 @@ export default function LiveBarcodes() {
     navigate("/labels", { state: { codes, namesByCode, mode: "print" } });
   }
 
-  /** -------------------- UI -------------------- **/
-  const totalPages = Math.ceil(totalCount / PAGE_SIZE) || 1;
+  /** -------------------- SORT HANDLER FOR RETURNED -------------------- **/
+  function toggleReturnedSort() {
+    setReturnedSortDir((dir) => (dir === "asc" ? "desc" : "asc"));
+  }
+
+  const returnedArrow = returnedSortDir === "asc" ? "↑" : "↓";
 
   return (
     <div className="grid">
@@ -191,7 +272,7 @@ export default function LiveBarcodes() {
         <div className="hd">
           <b>Live Barcodes</b>
 
-          {/* ✅ Filter Controls */}
+          {/* Filter Controls */}
           <div className="row" style={{ gap: 8, flexWrap: "wrap" }}>
             <input
               placeholder="Search barcode / item / bin…"
@@ -200,7 +281,7 @@ export default function LiveBarcodes() {
               style={{ minWidth: 240 }}
             />
 
-            {/* ✅ Date-time with seconds */}
+            {/* Date-time with seconds */}
             <input
               type="datetime-local"
               step="1"
@@ -214,14 +295,16 @@ export default function LiveBarcodes() {
               onChange={(e) => setToDate(e.target.value)}
             />
 
-            <label className="row" style={{ gap: 6 }}>
-              <input
-                type="checkbox"
-                checked={onlyNoBarcode}
-                onChange={(e) => setOnlyNoBarcode(e.target.checked)}
-              />
-              No-Barcode Returns
-            </label>
+            {/* Status + No-barcode filter */}
+            <select
+              value={statusFilter}
+              onChange={(e) => setStatusFilter(e.target.value)}
+            >
+              <option value="all">All Statuses</option>
+              <option value="available">Available</option>
+              <option value="returned">Returned</option>
+              <option value="returned_no_barcode">Returned (No-Barcode)</option>
+            </select>
 
             <button className="btn ghost" onClick={clearFilters}>
               Clear Filters
@@ -249,7 +332,7 @@ export default function LiveBarcodes() {
           </div>
         </div>
 
-        {/* ✅ TABLE */}
+        {/* TABLE */}
         <div className="bd" style={{ overflow: "auto" }}>
           {!!err && <div className="badge err">{err}</div>}
 
@@ -269,12 +352,19 @@ export default function LiveBarcodes() {
                 <th>Bin</th>
                 <th>Status</th>
                 <th>No-Barcode</th>
-                <th>Returned</th>
+                {/* Clickable Returned header with arrow */}
+                <th
+                  onClick={toggleReturnedSort}
+                  style={{ cursor: "pointer", whiteSpace: "nowrap" }}
+                  title="Sort by Returned date/time"
+                >
+                  Returned {returnedArrow}
+                </th>
                 <th>Produced</th>
               </tr>
             </thead>
             <tbody>
-              {filtered.map((r) => (
+              {pageRows.map((r) => (
                 <tr key={r.packet_code}>
                   <td>
                     <input
@@ -286,14 +376,16 @@ export default function LiveBarcodes() {
                   <td style={{ fontFamily: "monospace" }}>{r.packet_code}</td>
                   <td>{r.finished_good_name}</td>
                   <td>{r.bin_code || "—"}</td>
-                  <td><span className="badge">{r.status}</span></td>
+                  <td>
+                    <span className="badge">{r.status}</span>
+                  </td>
                   <td>{r.is_no_barcode_return ? "Yes" : "—"}</td>
                   <td>{fmtDate(r.returned_at)}</td>
                   <td>{fmtDate(r.produced_at)}</td>
                 </tr>
               ))}
 
-              {filtered.length === 0 && (
+              {pageRows.length === 0 && (
                 <tr>
                   <td colSpan={8} style={{ color: "var(--muted)" }}>
                     {loading ? "Loading…" : "No barcodes found"}
@@ -304,7 +396,7 @@ export default function LiveBarcodes() {
           </table>
         </div>
 
-        {/* ✅ Pagination */}
+        {/* Pagination on FILTERED rows */}
         <div
           className="row"
           style={{ justifyContent: "center", marginTop: 12, gap: 10 }}
@@ -317,7 +409,7 @@ export default function LiveBarcodes() {
             ← Prev
           </button>
           <span>
-            Page {page} / {totalPages} ({totalCount} total)
+            Page {page} / {totalPages} ({filtered.length} filtered of {totalCount} total)
           </span>
           <button
             className="btn ghost"
