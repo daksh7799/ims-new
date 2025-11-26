@@ -33,6 +33,8 @@ import SOAdmin from './pages/SOAdmin.jsx'
 import RawProcess from './pages/RawProcess.jsx'
 import FgSalesReport from './pages/FgSalesReport.jsx'
 import RawInwardReport from './pages/RawInwardReport.jsx'
+import DailyStockReport from './pages/DailyStockReport.jsx';
+
 
 // Stock check UI (route only; not in sidebar)
 import DailyStockCheck from './components/DailyStockCheck.jsx'
@@ -62,6 +64,7 @@ const LINKS = [
   { key: 'so-admin', path: '/so-admin', label: 'SO Admin' },
   { key: 'raw-process', path: '/raw-process', label: 'Raw Process' },
   { key: 'fg-sales', path: '/fg-sales', label: 'FG Sales Report' },
+  { key: 'daily-report', path: '/daily-report', label: 'Daily Stock Report' }, // ← add this
 
   // admin
   { key: 'masters', path: '/masters', label: 'Masters' },
@@ -147,6 +150,8 @@ export default function App() {
             {canSee('masters') && <Route path="/masters" element={<AdminMasters />} />}
             {canSee('admin') && <Route path="/admin" element={<AdminUsers />} />}
             {canSee('raw-inward-report') && <Route path="/raw-inward-report" element={<RawInwardReport />} />}
+            {canSee('daily-report') && (<Route path="/daily-report" element={<DailyStockReport />} />)}
+
 
             {/* Keep DailyStockCheck as a route if you want direct access (optional).
                 It's not included in the sidebar links above, so it won't show there.
