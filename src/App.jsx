@@ -1,3 +1,4 @@
+// src/App.jsx
 import { BrowserRouter, Routes, Route, NavLink } from 'react-router-dom'
 import { supabase } from './supabaseClient'
 import useSessionProfile from './auth/useSessionProfile'
@@ -30,10 +31,14 @@ import PacketTrace from './pages/PacketTrace.jsx'
 import RawAdjust from './pages/RawAdjust.jsx'
 import SOAdmin from './pages/SOAdmin.jsx'
 import RawProcess from './pages/RawProcess.jsx'
-import FgSalesReport from './pages/FgSalesReport.jsx'  // 👈 NEW MODULE
-import RawInwardReport from './pages/RawInwardReport.jsx'  // 👈 NEW MODULE
-import DailyStockCheck from './components/DailyStockCheck.jsx'  // 👈 NEW MODULE
+import FgSalesReport from './pages/FgSalesReport.jsx'
+import RawInwardReport from './pages/RawInwardReport.jsx'
 
+// Stock check UI (route only; not in sidebar)
+import DailyStockCheck from './components/DailyStockCheck.jsx'
+
+// Gate wrapper for manufacture route
+import ManufacturingGate from './components/ManufacturingGate.jsx'
 
 const LINKS = [
   { key: 'dashboard', path: '/', label: 'Dashboard', end: true },
@@ -50,17 +55,13 @@ const LINKS = [
   { key: 'inv-fg', path: '/inv-fg', label: 'FG Inventory' },
   { key: 'blends', path: '/blends', label: 'Blend Recipes' },
   { key: 'blend-mfg', path: '/blend-manufacture', label: 'Blend Manufacture' },
-  { key: 'raw-inward-report', path: '/raw-inward-report', label: 'Raw Inward Report' },
-    { key: 'daily-check', path: '/daily-check', label: 'Daily Stock Check' }, // 👈 ADDED HERE
-
-
 
   // utilities
   { key: 'trace', path: '/trace', label: 'Packet Trace' },
   { key: 'raw-adjust', path: '/raw-adjust', label: 'Raw Adjust' },
   { key: 'so-admin', path: '/so-admin', label: 'SO Admin' },
   { key: 'raw-process', path: '/raw-process', label: 'Raw Process' },
-  { key: 'fg-sales', path: '/fg-sales', label: 'FG Sales Report' }, // 👈 ADDED HERE
+  { key: 'fg-sales', path: '/fg-sales', label: 'FG Sales Report' },
 
   // admin
   { key: 'masters', path: '/masters', label: 'Masters' },
@@ -113,7 +114,19 @@ export default function App() {
             {canSee('dashboard') && <Route path="/" element={<Dashboard />} />}
             {canSee('raw') && <Route path="/raw" element={<RawInward />} />}
             {canSee('bom') && <Route path="/bom" element={<BOM />} />}
-            {canSee('mfg') && <Route path="/mfg" element={<Manufacture />} />}
+
+            {/* Manufacture route wrapped with ManufacturingGate to enforce daily check */}
+            {canSee('mfg') && (
+              <Route
+                path="/mfg"
+                element={
+                  <ManufacturingGate>
+                    <Manufacture />
+                  </ManufacturingGate>
+                }
+              />
+            )}
+
             {canSee('live') && <Route path="/live" element={<LiveBarcodes />} />}
             {canSee('putaway') && <Route path="/putaway" element={<Putaway />} />}
             {canSee('bin-inv') && <Route path="/bin-inv" element={<BinInventory />} />}
@@ -129,14 +142,16 @@ export default function App() {
             {canSee('raw-adjust') && <Route path="/raw-adjust" element={<RawAdjust />} />}
             {canSee('so-admin') && <Route path="/so-admin" element={<SOAdmin />} />}
             {canSee('raw-process') && <Route path="/raw-process" element={<RawProcess />} />}
-            {canSee('fg-sales') && <Route path="/fg-sales" element={<FgSalesReport />} />} {/* 👈 NEW ROUTE */}
+            {canSee('fg-sales') && <Route path="/fg-sales" element={<FgSalesReport />} />}
 
             {canSee('masters') && <Route path="/masters" element={<AdminMasters />} />}
             {canSee('admin') && <Route path="/admin" element={<AdminUsers />} />}
             {canSee('raw-inward-report') && <Route path="/raw-inward-report" element={<RawInwardReport />} />}
-             {canSee('daily-check') && <Route path="/daily-check" element={<DailyStockCheck />} />}
 
-
+            {/* Keep DailyStockCheck as a route if you want direct access (optional).
+                It's not included in the sidebar links above, so it won't show there.
+            */}
+            {canSee('daily-check') && <Route path="/daily-check" element={<DailyStockCheck />} />}
 
             {/* fallback */}
             <Route path="*" element={<div style={{ padding: 20 }}>Not found or access denied.</div>} />
