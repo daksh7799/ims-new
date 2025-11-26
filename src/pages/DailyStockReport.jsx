@@ -5,7 +5,11 @@ import { useToast } from "../ui/toast.jsx";
 
 function fmtDate(d) {
   if (!d) return "—";
-  return new Date(d).toLocaleDateString();
+  try {
+    return new Date(d).toLocaleDateString();
+  } catch {
+    return String(d);
+  }
 }
 
 export default function DailyStockReport() {
@@ -13,13 +17,12 @@ export default function DailyStockReport() {
   const [rows, setRows] = useState([]);
   const [loading, setLoading] = useState(true);
 
-  // Control for optional filtering by last_stock_check_date
+  // filter by raw_materials.last_stock_check_date (optional)
   const todayIso = new Date().toISOString().split("T")[0];
   const [filterLastChecked, setFilterLastChecked] = useState(false);
   const [lastCheckedDate, setLastCheckedDate] = useState(todayIso);
 
-  // manual refresh
-  const [refreshTick, setRefreshTick] = useState(0);
+  const [tick, setTick] = useState(0);
 
   useEffect(() => {
     let cancelled = false;
@@ -27,84 +30,97 @@ export default function DailyStockReport() {
     async function load() {
       setLoading(true);
       try {
-        // 1) Fetch active raw_materials with needed fields
+        // 1) fetch active raw materials with last_stock_check_date
         const { data: rms, error: rmsErr } = await supabase
           .from("raw_materials")
-          .select("id, name, unit, is_active, last_stock_check_date")
+          .select("id, name, last_stock_check_date")
           .eq("is_active", true)
           .order("name", { ascending: true });
 
         if (rmsErr) throw rmsErr;
-        const rawMaterials = rms || [];
+        const rawMaterials = Array.isArray(rms) ? rms : [];
 
-        // If filtering by last checked date is enabled, filter here (exact date match)
+        // 2) apply optional filter by last_stock_check_date (exact YYYY-MM-DD)
         const filteredRMs = filterLastChecked
           ? rawMaterials.filter((rm) => {
               if (!rm.last_stock_check_date) return false;
-              // compare YYYY-MM-DD
               const d = new Date(rm.last_stock_check_date).toISOString().split("T")[0];
               return d === lastCheckedDate;
             })
           : rawMaterials;
 
         const rmIds = filteredRMs.map((r) => r.id);
-
-        // 2) Fetch system qty from v_raw_inventory for those RM ids
-        let systemById = {};
-        if (rmIds.length) {
-          const { data: invRows, error: invErr } = await supabase
-            .from("v_raw_inventory")
-            .select("rm_id, qty_on_hand")
-            .in("rm_id", rmIds);
-
-          if (invErr) throw invErr;
-
-          systemById = Object.fromEntries(
-            (invRows || []).map((r) => [r.rm_id, Number(r.qty_on_hand || 0)])
-          );
+        if (!rmIds.length) {
+          if (!cancelled) setRows([]);
+          return;
         }
 
-        // 3) Fetch latest measured_qty per RM (we pull recent checks and pick latest per RM)
-        let measuredById = {};
-        if (rmIds.length) {
-          // fetch recent checks for these RM ids ordered by created_at desc
-          const { data: checks, error: checksErr } = await supabase
-            .from("daily_stock_checks")
-            .select("raw_material_id, measured_qty, created_at")
-            .in("raw_material_id", rmIds)
-            .order("created_at", { ascending: false });
+        // 3) fetch live system qty from v_raw_inventory
+        const { data: invRows, error: invErr } = await supabase
+          .from("v_raw_inventory")
+          .select("rm_id, qty_on_hand")
+          .in("rm_id", rmIds);
 
-          if (checksErr) throw checksErr;
+        if (invErr) throw invErr;
 
-          // pick the first occurrence (latest) per raw_material_id
-          for (const c of checks || []) {
-            const key = c.raw_material_id;
-            if (measuredById[key] === undefined) {
-              measuredById[key] = Number(c.measured_qty ?? 0);
-            }
+        const systemLiveById = Object.fromEntries(
+          (invRows || []).map((r) => [r.rm_id, Number(r.qty_on_hand ?? 0)])
+        );
+
+        // 4) fetch daily_stock_checks for these RM ids, ordered by created_at desc
+        const { data: checks, error: checksErr } = await supabase
+          .from("daily_stock_checks")
+          .select("raw_material_id, measured_qty, system_qty, created_at")
+          .in("raw_material_id", rmIds)
+          .order("created_at", { ascending: false });
+
+        if (checksErr) throw checksErr;
+
+        // 5) reduce to latest per RM (first occurrence because ordered desc)
+        const latestById = {};
+        for (const c of checks || []) {
+          const id = c.raw_material_id;
+          if (latestById[id] === undefined) {
+            latestById[id] = {
+              measured_qty:
+                c.measured_qty === null || typeof c.measured_qty === "undefined"
+                  ? null
+                  : Number(c.measured_qty),
+              system_snapshot:
+                c.system_qty === null || typeof c.system_qty === "undefined"
+                  ? null
+                  : Number(c.system_qty),
+              created_at: c.created_at,
+            };
           }
         }
 
-        // 4) Merge into rows (one per filtered raw material)
-        const merged = filteredRMs.map((rm) => {
-          const systemQty =
-            typeof systemById[rm.id] !== "undefined" ? systemById[rm.id] : 0;
-          const measured =
-            typeof measuredById[rm.id] !== "undefined" ? measuredById[rm.id] : null;
-          const variance = measured === null ? null : Number(measured - systemQty);
+        // 6) compose final rows
+        const final = filteredRMs.map((rm) => {
+          const live = typeof systemLiveById[rm.id] !== "undefined" ? systemLiveById[rm.id] : 0;
+          const latest = latestById[rm.id] ?? null;
+          const measured_latest = latest ? latest.measured_qty : null;
+          const system_snapshot = latest ? latest.system_snapshot : null;
+
+          // variance defined only when both measured and snapshot exist
+          const variance =
+            measured_latest === null || system_snapshot === null
+              ? null
+              : Number(measured_latest - system_snapshot);
 
           return {
             id: rm.id,
             name: rm.name,
-            unit: rm.unit,
-            last_stock_check_date: rm.last_stock_check_date,
-            system_qty: systemQty,
-            measured_qty: measured,
+            system_live: live,
+            system_snapshot,
+            measured_latest,
             variance,
+            last_stock_check_date: rm.last_stock_check_date,
+            snapshot_checked_at: latest ? latest.created_at : null,
           };
         });
 
-        if (!cancelled) setRows(merged);
+        if (!cancelled) setRows(final);
       } catch (e) {
         console.error(e);
         if (!cancelled) push(e.message || String(e), "err");
@@ -117,36 +133,33 @@ export default function DailyStockReport() {
     return () => {
       cancelled = true;
     };
-    // refresh whenever date/filter/refreshTick changes
-  }, [filterLastChecked, lastCheckedDate, refreshTick, push]);
+  }, [filterLastChecked, lastCheckedDate, tick, push]);
 
   return (
     <div className="grid">
       <div className="card">
-        <div className="hd" style={{ alignItems: "center", gap: 8 }}>
-          <div style={{ display: "flex", gap: 12, alignItems: "center" }}>
-            <b>Daily Stock Report</b>
-            <span className="badge">{rows.length} materials</span>
-          </div>
+        <div className="hd" style={{ display: "flex", alignItems: "center", gap: 12 }}>
+          <b>Daily Stock — Snapshot vs Live</b>
+          <span className="badge">{rows.length} materials</span>
 
-          <div style={{ marginLeft: "auto", display: "flex", gap: 8, alignItems: "center" }}>
-            <label className="s" style={{ display: "flex", gap: 8, alignItems: "center", margin: 0 }}>
+          <div style={{ marginLeft: "auto", display: "flex", alignItems: "center", gap: 8 }}>
+            <label style={{ display: "flex", alignItems: "center", gap: 6, margin: 0 }}>
               <input
                 type="checkbox"
                 checked={filterLastChecked}
                 onChange={(e) => setFilterLastChecked(e.target.checked)}
               />
-              Filter by Last Checked:
+              Filter by Last Checked
             </label>
 
             <input
               type="date"
               value={lastCheckedDate}
-              onChange={(e) => setLastCheckedDate(e.target.value)}
               disabled={!filterLastChecked}
+              onChange={(e) => setLastCheckedDate(e.target.value)}
             />
 
-            <button className="btn" onClick={() => setRefreshTick((t) => t + 1)} disabled={loading}>
+            <button className="btn" onClick={() => setTick((t) => t + 1)} disabled={loading}>
               {loading ? "Loading…" : "Refresh"}
             </button>
           </div>
@@ -157,7 +170,8 @@ export default function DailyStockReport() {
             <thead>
               <tr>
                 <th>Raw Material</th>
-                <th style={{ textAlign: "right" }}>System</th>
+                <th style={{ textAlign: "right" }}>System (live)</th>
+                <th style={{ textAlign: "right" }}>System (snapshot)</th>
                 <th style={{ textAlign: "right" }}>Measured (latest)</th>
                 <th style={{ textAlign: "right" }}>Variance</th>
                 <th>Last Checked</th>
@@ -169,8 +183,6 @@ export default function DailyStockReport() {
                 const color =
                   r.variance === null
                     ? "var(--muted)"
-                    : r.variance === 0
-                    ? "var(--muted)"
                     : r.variance < 0
                     ? "var(--err)"
                     : "var(--ok)";
@@ -178,21 +190,16 @@ export default function DailyStockReport() {
                 return (
                   <tr key={r.id}>
                     <td>{r.name}</td>
-
+                    <td style={{ textAlign: "right" }}>{Number(r.system_live ?? 0).toFixed(2)}</td>
                     <td style={{ textAlign: "right" }}>
-                      {Number(r.system_qty || 0).toFixed(2)}
+                      {r.system_snapshot === null ? "—" : Number(r.system_snapshot).toFixed(2)}
                     </td>
-
                     <td style={{ textAlign: "right", fontWeight: 600 }}>
-                      {r.measured_qty === null ? "—" : Number(r.measured_qty).toFixed(2)}
+                      {r.measured_latest === null ? "—" : Number(r.measured_latest).toFixed(2)}
                     </td>
-
                     <td style={{ textAlign: "right", color, fontWeight: 600 }}>
-                      {r.variance === null
-                        ? "—"
-                        : `${r.variance > 0 ? "+" : ""}${Number(r.variance).toFixed(2)}`}
+                      {r.variance === null ? "—" : `${r.variance > 0 ? "+" : ""}${r.variance.toFixed(2)}`}
                     </td>
-
                     <td>{r.last_stock_check_date ? fmtDate(r.last_stock_check_date) : "—"}</td>
                   </tr>
                 );
@@ -200,7 +207,7 @@ export default function DailyStockReport() {
 
               {rows.length === 0 && (
                 <tr>
-                  <td colSpan={5} style={{ color: "var(--muted)" }}>
+                  <td colSpan={6} style={{ textAlign: "center", color: "var(--muted)" }}>
                     {loading ? "Loading..." : "No data"}
                   </td>
                 </tr>

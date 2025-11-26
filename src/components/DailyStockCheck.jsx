@@ -60,6 +60,7 @@ export default function DailyStockCheck({ onCompleted }) {
     );
   }
 
+  // --- UPDATED handleSubmit: use RPC (server computes system_qty and updates last_stock_check_date) ---
   async function handleSubmit() {
     const invalid = items.find(
       (i) => i.enteredQty === "" || isNaN(Number(i.enteredQty))
@@ -78,19 +79,14 @@ export default function DailyStockCheck({ onCompleted }) {
         check_date: today,
       }));
 
-      // 1) Insert into daily_stock_checks
-      const { error } = await supabase
-        .from("daily_stock_checks")
-        .insert(payload);
-      if (error) throw error;
+      // CALL RPC: server computes system_qty from v_raw_inventory, upserts daily_stock_checks
+      // and updates raw_materials.last_stock_check_date atomically.
+      const { error } = await supabase.rpc(
+        "upsert_daily_stock_checks_server",
+        { p_checks: JSON.stringify(payload) }
+      );
 
-      // 2) Update last_stock_check_date for these items
-      const ids = items.map((i) => i.id);
-      const { error: updErr } = await supabase
-        .from("raw_materials")
-        .update({ last_stock_check_date: today })
-        .in("id", ids);
-      if (updErr) throw updErr;
+      if (error) throw error;
 
       setSubmitted(true);
       push("Stock check submitted successfully!", "ok");
@@ -98,11 +94,12 @@ export default function DailyStockCheck({ onCompleted }) {
       if (onCompleted) onCompleted();
     } catch (e) {
       console.error(e);
-      push(e.message, "err");
+      push(e.message || String(e), "err");
     } finally {
       setLoading(false);
     }
   }
+  // --- end handleSubmit ---
 
   if (loading && items.length === 0) {
     return <div className="p-4">Loading stock check…</div>;
