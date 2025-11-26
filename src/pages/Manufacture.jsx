@@ -4,6 +4,7 @@ import { saveAs } from "file-saver";
 import { supabase } from "../supabaseClient";
 import { useNavigate } from "react-router-dom";
 import AsyncFGSelect from "../components/AsyncFGSelect.jsx";
+import ManufacturingGate from "../components/ManufacturingGate.jsx"; // 👈 NEW
 
 const LS_SINGLE = "lastSingleRun";
 const LS_BULK = "lastBulkRun";
@@ -35,15 +36,19 @@ export default function ManufacturePage() {
   async function manufactureOnce() {
     if (!fgId) return alert("Select a finished good");
     const n = Math.max(1, Math.floor(Number(qty)));
-    if (!Number.isFinite(n) || n <= 0) return alert("Enter valid quantity (>=1)");
+    if (!Number.isFinite(n) || n <= 0)
+      return alert("Enter valid quantity (>=1)");
 
     setMaking(true);
     setLastBatch(null);
     try {
-      const { data, error } = await supabase.rpc("create_manufacture_batch_v3", {
-        p_finished_good_id: fgId,
-        p_qty_units: n,
-      });
+      const { data, error } = await supabase.rpc(
+        "create_manufacture_batch_v3",
+        {
+          p_finished_good_id: fgId,
+          p_qty_units: n,
+        }
+      );
       if (error) throw error;
 
       const batchId = data?.batch_id;
@@ -83,7 +88,9 @@ export default function ManufacturePage() {
   function openLabelsSingle() {
     if (!singleCreated.length) return;
     const codes = singleCreated.map((x) => x.code);
-    const namesByCode = Object.fromEntries(singleCreated.map((x) => [x.code, x.name]));
+    const namesByCode = Object.fromEntries(
+      singleCreated.map((x) => [x.code, x.name])
+    );
     navigate("/labels", {
       state: { title: fgName || "Labels", codes, namesByCode },
     });
@@ -92,7 +99,9 @@ export default function ManufacturePage() {
   function printLabelsSingle() {
     if (!singleCreated.length) return;
     const codes = singleCreated.map((x) => x.code);
-    const namesByCode = Object.fromEntries(singleCreated.map((x) => [x.code, x.name]));
+    const namesByCode = Object.fromEntries(
+      singleCreated.map((x) => [x.code, x.name])
+    );
     navigate("/labels", {
       state: { title: fgName || "Labels", codes, namesByCode, autoPrint: true },
     });
@@ -325,7 +334,9 @@ export default function ManufacturePage() {
         /* ignore */
       }
 
-      alert(`✅ Bulk manufacturing complete — ${allCreated.length} packets created.`);
+      alert(
+        `✅ Bulk manufacturing complete — ${allCreated.length} packets created.`
+      );
     } catch (err) {
       console.error("Bulk run failed:", err);
       alert(`Bulk manufacturing failed: ${err.message || err}`);
@@ -337,7 +348,9 @@ export default function ManufacturePage() {
   function openLabelsBulk() {
     if (!bulkCreated.length) return;
     const codes = bulkCreated.map((x) => x.code);
-    const namesByCode = Object.fromEntries(bulkCreated.map((x) => [x.code, x.name]));
+    const namesByCode = Object.fromEntries(
+      bulkCreated.map((x) => [x.code, x.name])
+    );
     navigate("/labels", {
       state: { title: "Bulk Labels", codes, namesByCode },
     });
@@ -346,7 +359,9 @@ export default function ManufacturePage() {
   function printLabelsBulk() {
     if (!bulkCreated.length) return;
     const codes = bulkCreated.map((x) => x.code);
-    const namesByCode = Object.fromEntries(bulkCreated.map((x) => [x.code, x.name]));
+    const namesByCode = Object.fromEntries(
+      bulkCreated.map((x) => [x.code, x.name])
+    );
     navigate("/labels", {
       state: { title: "Bulk Labels", codes, namesByCode, autoPrint: true },
     });
@@ -365,256 +380,266 @@ export default function ManufacturePage() {
    * RENDER
    * ======================================================= */
   return (
-    <div className="grid">
-      <div className="card">
-        <div className="hd">
-          <b>Manufacture</b>
-          <div className="row">
-            <button
-              className={`btn ghost ${tab === "single" ? "active" : ""}`}
-              onClick={() => setTab("single")}
-            >
-              Single
-            </button>
-            <button
-              className={`btn ghost ${tab === "bulk" ? "active" : ""}`}
-              onClick={() => setTab("bulk")}
-            >
-              Bulk
-            </button>
+    <ManufacturingGate>
+      <div className="grid">
+        <div className="card">
+          <div className="hd">
+            <b>Manufacture</b>
+            <div className="row">
+              <button
+                className={`btn ghost ${tab === "single" ? "active" : ""}`}
+                onClick={() => setTab("single")}
+              >
+                Single
+              </button>
+              <button
+                className={`btn ghost ${tab === "bulk" ? "active" : ""}`}
+                onClick={() => setTab("bulk")}
+              >
+                Bulk
+              </button>
+            </div>
           </div>
-        </div>
 
-        <div className="bd">
-          {/* ================= SINGLE TAB ================= */}
-          {tab === "single" && (
-            <>
-              <div
-                className="row"
-                style={{ gap: 8, alignItems: "center", flexWrap: "wrap" }}
-              >
-                <AsyncFGSelect
-                  value={fgId}
-                  onChange={(id, item) => {
-                    setFgId(String(id || ""));
-                    setFgName(item?.name || "");
-                  }}
-                  placeholder="Search finished goods…"
-                  minChars={1}
-                  pageSize={25}
-                />
-                <input
-                  type="number"
-                  min="1"
-                  value={qty}
-                  onChange={(e) => setQty(e.target.value)}
-                  style={{ width: 140 }}
-                  placeholder="Qty (units)"
-                />
-                <button
-                  className="btn"
-                  onClick={manufactureOnce}
-                  disabled={making || !fgId || Number(qty) <= 0}
+          <div className="bd">
+            {/* ================= SINGLE TAB ================= */}
+            {tab === "single" && (
+              <>
+                <div
+                  className="row"
+                  style={{ gap: 8, alignItems: "center", flexWrap: "wrap" }}
                 >
-                  {making ? "Manufacturing…" : "Create Packets"}
-                </button>
-                <button
-                  className="btn outline"
-                  onClick={openLabelsSingle}
-                  disabled={!singleCreated.length}
-                >
-                  Open Labels (2-up PDF)
-                </button>
-                <button
-                  className="btn"
-                  onClick={printLabelsSingle}
-                  disabled={!singleCreated.length}
-                >
-                  🖨️ Print Labels (2-up)
-                </button>
-                <button
-                  className="btn ghost"
-                  onClick={clearLastSingle}
-                  disabled={!singleCreated.length}
-                >
-                  Clear Last
-                </button>
-              </div>
-
-              {!!lastBatch && (
-                <div className="row" style={{ marginTop: 6, gap: 8 }}>
-                  <span className="badge">Batch: {lastBatch.batch_id}</span>
-                  <span className="badge">Packets: {lastBatch.packets_created}</span>
+                  <AsyncFGSelect
+                    value={fgId}
+                    onChange={(id, item) => {
+                      setFgId(String(id || ""));
+                      setFgName(item?.name || "");
+                    }}
+                    placeholder="Search finished goods…"
+                    minChars={1}
+                    pageSize={25}
+                  />
+                  <input
+                    type="number"
+                    min="1"
+                    value={qty}
+                    onChange={(e) => setQty(e.target.value)}
+                    style={{ width: 140 }}
+                    placeholder="Qty (units)"
+                  />
+                  <button
+                    className="btn"
+                    onClick={manufactureOnce}
+                    disabled={making || !fgId || Number(qty) <= 0}
+                  >
+                    {making ? "Manufacturing…" : "Create Packets"}
+                  </button>
+                  <button
+                    className="btn outline"
+                    onClick={openLabelsSingle}
+                    disabled={!singleCreated.length}
+                  >
+                    Open Labels (2-up PDF)
+                  </button>
+                  <button
+                    className="btn"
+                    onClick={printLabelsSingle}
+                    disabled={!singleCreated.length}
+                  >
+                    🖨️ Print Labels (2-up)
+                  </button>
+                  <button
+                    className="btn ghost"
+                    onClick={clearLastSingle}
+                    disabled={!singleCreated.length}
+                  >
+                    Clear Last
+                  </button>
                 </div>
-              )}
 
-              <div className="card" style={{ marginTop: 10 }}>
-                <div className="hd">
-                  <b>Last Run Preview (Single)</b>
-                  <span className="badge">
-                    {singleCreated.length
-                      ? `${singleCreated.length} packets`
-                      : "None"}
-                  </span>
-                </div>
-                <div className="bd">
-                  {!singleCreated.length && (
-                    <div className="badge">No single manufacture yet</div>
-                  )}
-                  {!!singleCreated.length && (
-                    <div
-                      className="grid"
-                      style={{
-                        gridTemplateColumns: "repeat(auto-fill,minmax(240px,1fr))",
-                      }}
-                    >
-                      {singleCreated.map((x) => (
-                        <div key={x.code} className="card">
-                          <div className="bd">
-                            <div style={{ fontWeight: 600 }}>
-                              {x.name || fgName || "—"}
-                            </div>
-                            <code
-                              style={{
-                                fontFamily: "monospace",
-                                wordBreak: "break-all",
-                              }}
-                            >
-                              {x.code}
-                            </code>
-                          </div>
-                        </div>
-                      ))}
-                    </div>
-                  )}
-                </div>
-              </div>
-            </>
-          )}
+                {!!lastBatch && (
+                  <div className="row" style={{ marginTop: 6, gap: 8 }}>
+                    <span className="badge">
+                      Batch: {lastBatch.batch_id}
+                    </span>
+                    <span className="badge">
+                      Packets: {lastBatch.packets_created}
+                    </span>
+                  </div>
+                )}
 
-          {/* ================= BULK TAB ================= */}
-          {tab === "bulk" && (
-            <>
-              <div
-                className="row"
-                style={{ gap: 8, alignItems: "center", flexWrap: "wrap" }}
-              >
-                <input
-                  type="file"
-                  accept=".xlsx,.xls,.csv"
-                  onChange={onFile}
-                />
-                <button
-                  className="btn"
-                  onClick={runBulk}
-                  disabled={bulkLoading || !rows.length}
-                >
-                  {bulkLoading ? "Working…" : "Create Batches"}
-                </button>
-                <button
-                  className="btn outline"
-                  onClick={openLabelsBulk}
-                  disabled={!bulkCreated.length}
-                >
-                  Open Labels (2-up PDF)
-                </button>
-                <button
-                  className="btn"
-                  onClick={printLabelsBulk}
-                  disabled={!bulkCreated.length}
-                >
-                  🖨️ Print Labels (2-up)
-                </button>
-                <button
-                  className="btn ghost"
-                  onClick={clearLastBulk}
-                  disabled={!bulkCreated.length}
-                >
-                  Clear Last
-                </button>
-                <button className="btn ghost" onClick={downloadTemplateCSV}>
-                  📄 Download Sample CSV
-                </button>
-              </div>
-
-              <div
-                className="s"
-                style={{ color: "var(--muted)", marginTop: 6 }}
-              >
-                Upload CSV with columns: <code>finished_good</code>,{" "}
-                <code>qty</code>. Only rows with qty &gt; 0 will be processed.
-              </div>
-
-              {/* Preview of uploaded rows (to be created) */}
-              {!!rows.length && (
                 <div className="card" style={{ marginTop: 10 }}>
                   <div className="hd">
-                    <b>Upload Preview</b>
-                    <span className="badge">{rows.length} item(s)</span>
+                    <b>Last Run Preview (Single)</b>
+                    <span className="badge">
+                      {singleCreated.length
+                        ? `${singleCreated.length} packets`
+                        : "None"}
+                    </span>
                   </div>
-                  <div className="bd" style={{ overflow: "auto" }}>
-                    <table className="table">
-                      <thead>
-                        <tr>
-                          <th>Finished Good (from CSV)</th>
-                          <th style={{ textAlign: "right" }}>Qty</th>
-                        </tr>
-                      </thead>
-                      <tbody>
-                        {rows.map((r, i) => (
-                          <tr key={i}>
-                            <td>{r.name}</td>
-                            <td style={{ textAlign: "right" }}>{r.qty}</td>
-                          </tr>
-                        ))}
-                      </tbody>
-                    </table>
-                  </div>
-                </div>
-              )}
-
-              {/* Last created barcodes preview */}
-              <div className="card" style={{ marginTop: 10 }}>
-                <div className="hd">
-                  <b>Last Upload Preview (Bulk)</b>
-                  <span className="badge">
-                    {bulkCreated.length ? `${bulkCreated.length} packets` : "None"}
-                  </span>
-                </div>
-                <div className="bd">
-                  {!bulkCreated.length && (
-                    <div className="badge">No bulk upload yet</div>
-                  )}
-                  {!!bulkCreated.length && (
-                    <div
-                      className="grid"
-                      style={{
-                        gridTemplateColumns: "repeat(auto-fill,minmax(240px,1fr))",
-                      }}
-                    >
-                      {bulkCreated.map((x) => (
-                        <div key={x.code} className="card">
-                          <div className="bd">
-                            <div style={{ fontWeight: 600 }}>{x.name}</div>
-                            <code
-                              style={{
-                                fontFamily: "monospace",
-                                wordBreak: "break-all",
-                              }}
-                            >
-                              {x.code}
-                            </code>
+                  <div className="bd">
+                    {!singleCreated.length && (
+                      <div className="badge">No single manufacture yet</div>
+                    )}
+                    {!!singleCreated.length && (
+                      <div
+                        className="grid"
+                        style={{
+                          gridTemplateColumns:
+                            "repeat(auto-fill,minmax(240px,1fr))",
+                        }}
+                      >
+                        {singleCreated.map((x) => (
+                          <div key={x.code} className="card">
+                            <div className="bd">
+                              <div style={{ fontWeight: 600 }}>
+                                {x.name || fgName || "—"}
+                              </div>
+                              <code
+                                style={{
+                                  fontFamily: "monospace",
+                                  wordBreak: "break-all",
+                                }}
+                              >
+                                {x.code}
+                              </code>
+                            </div>
                           </div>
-                        </div>
-                      ))}
-                    </div>
-                  )}
+                        ))}
+                      </div>
+                    )}
+                  </div>
                 </div>
-              </div>
-            </>
-          )}
+              </>
+            )}
+
+            {/* ================= BULK TAB ================= */}
+            {tab === "bulk" && (
+              <>
+                <div
+                  className="row"
+                  style={{ gap: 8, alignItems: "center", flexWrap: "wrap" }}
+                >
+                  <input
+                    type="file"
+                    accept=".xlsx,.xls,.csv"
+                    onChange={onFile}
+                  />
+                  <button
+                    className="btn"
+                    onClick={runBulk}
+                    disabled={bulkLoading || !rows.length}
+                  >
+                    {bulkLoading ? "Working…" : "Create Batches"}
+                  </button>
+                  <button
+                    className="btn outline"
+                    onClick={openLabelsBulk}
+                    disabled={!bulkCreated.length}
+                  >
+                    Open Labels (2-up PDF)
+                  </button>
+                  <button
+                    className="btn"
+                    onClick={printLabelsBulk}
+                    disabled={!bulkCreated.length}
+                  >
+                    🖨️ Print Labels (2-up)
+                  </button>
+                  <button
+                    className="btn ghost"
+                    onClick={clearLastBulk}
+                    disabled={!bulkCreated.length}
+                  >
+                    Clear Last
+                  </button>
+                  <button className="btn ghost" onClick={downloadTemplateCSV}>
+                    📄 Download Sample CSV
+                  </button>
+                </div>
+
+                <div
+                  className="s"
+                  style={{ color: "var(--muted)", marginTop: 6 }}
+                >
+                  Upload CSV with columns: <code>finished_good</code>,{" "}
+                  <code>qty</code>. Only rows with qty &gt; 0 will be processed.
+                </div>
+
+                {/* Preview of uploaded rows (to be created) */}
+                {!!rows.length && (
+                  <div className="card" style={{ marginTop: 10 }}>
+                    <div className="hd">
+                      <b>Upload Preview</b>
+                      <span className="badge">{rows.length} item(s)</span>
+                    </div>
+                    <div className="bd" style={{ overflow: "auto" }}>
+                      <table className="table">
+                        <thead>
+                          <tr>
+                            <th>Finished Good (from CSV)</th>
+                            <th style={{ textAlign: "right" }}>Qty</th>
+                          </tr>
+                        </thead>
+                        <tbody>
+                          {rows.map((r, i) => (
+                            <tr key={i}>
+                              <td>{r.name}</td>
+                              <td style={{ textAlign: "right" }}>{r.qty}</td>
+                            </tr>
+                          ))}
+                        </tbody>
+                      </table>
+                    </div>
+                  </div>
+                )}
+
+                {/* Last created barcodes preview */}
+                <div className="card" style={{ marginTop: 10 }}>
+                  <div className="hd">
+                    <b>Last Upload Preview (Bulk)</b>
+                    <span className="badge">
+                      {bulkCreated.length
+                        ? `${bulkCreated.length} packets`
+                        : "None"}
+                    </span>
+                  </div>
+                  <div className="bd">
+                    {!bulkCreated.length && (
+                      <div className="badge">No bulk upload yet</div>
+                    )}
+                    {!!bulkCreated.length && (
+                      <div
+                        className="grid"
+                        style={{
+                          gridTemplateColumns:
+                            "repeat(auto-fill,minmax(240px,1fr))",
+                        }}
+                      >
+                        {bulkCreated.map((x) => (
+                          <div key={x.code} className="card">
+                            <div className="bd">
+                              <div style={{ fontWeight: 600 }}>{x.name}</div>
+                              <code
+                                style={{
+                                  fontFamily: "monospace",
+                                  wordBreak: "break-all",
+                                }}
+                              >
+                                {x.code}
+                              </code>
+                            </div>
+                          </div>
+                        ))}
+                      </div>
+                    )}
+                  </div>
+                </div>
+              </>
+            )}
+          </div>
         </div>
       </div>
-    </div>
+    </ManufacturingGate>
   );
 }
