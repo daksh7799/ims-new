@@ -83,7 +83,7 @@ export default function DailyStockCheck({ onCompleted }) {
       // and updates raw_materials.last_stock_check_date atomically.
       const { error } = await supabase.rpc(
         "upsert_daily_stock_checks_server",
-        { p_checks: JSON.stringify(payload) }
+        { p_checks: payload }
       );
 
       if (error) throw error;
