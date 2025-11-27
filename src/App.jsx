@@ -65,6 +65,8 @@ const LINKS = [
   { key: 'raw-process', path: '/raw-process', label: 'Raw Process' },
   { key: 'fg-sales', path: '/fg-sales', label: 'FG Sales Report' },
   { key: 'daily-report', path: '/daily-report', label: 'Daily Stock Report' }, // ← add this
+  { key: 'raw-inward-report', path: '/raw-inward-report', label: 'Raw Inward Report' }, // ← add this
+
 
   // admin
   { key: 'masters', path: '/masters', label: 'Masters' },
