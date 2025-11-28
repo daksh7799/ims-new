@@ -22,7 +22,7 @@ export default function ManufacturingGate({ children }) {
 
         if (error) throw error;
 
-        const needCheck = (count || 0) < 5;
+        const needCheck = (count || 0) < 15;
         console.log("Stock checks today:", count, "requiresCheck:", needCheck);
 
         if (!cancelled) {
