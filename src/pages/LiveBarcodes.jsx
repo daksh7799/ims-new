@@ -1,192 +1,138 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useEffect, useState } from "react";
 import { supabase } from "../supabaseClient";
 import { downloadCSV } from "../utils/csv";
 import { useNavigate } from "react-router-dom";
+import { useToast } from "../ui/toast.jsx";
 
-/** small debounce hook */
-function useDebounced(value, delay = 300) {
-  const [v, setV] = useState(value);
-  useEffect(() => {
-    const id = setTimeout(() => setV(value), delay);
-    return () => clearTimeout(id);
-  }, [value, delay]);
-  return v;
-}
-
+// Format date/time to local (IST)
 function fmtDate(d) {
   if (!d) return "—";
   const t = typeof d === "string" ? Date.parse(d) : d;
   if (Number.isNaN(t)) return "—";
-  return new Date(t).toLocaleString();
+  return new Date(t).toLocaleString(); // auto local time (IST in browser)
 }
 
-const PAGE_SIZE = 100; // smaller UI pages when server paging
-const FETCH_CHUNK = 1000; // chunk size used for full exports
+const PAGE_SIZE = 50;
 
 export default function LiveBarcodes() {
-  const [rows, setRows] = useState([]); // current page rows
-  const [totalCount, setTotalCount] = useState(0); // total matching rows on server
+  const { push } = useToast();
+  const [rows, setRows] = useState([]);
+  const [totalCount, setTotalCount] = useState(0);
   const [page, setPage] = useState(1);
   const [loading, setLoading] = useState(true);
-  const [err, setErr] = useState("");
 
-  // filters
   const [q, setQ] = useState("");
-  const debouncedQ = useDebounced(q, 350);
+  // all / available / returned / returned_no_barcode
   const [statusFilter, setStatusFilter] = useState("all");
   const [fromDate, setFromDate] = useState("");
   const [toDate, setToDate] = useState("");
-  const debouncedFrom = useDebounced(fromDate, 300);
-  const debouncedTo = useDebounced(toDate, 300);
-
-  // selection across pages (set of packet_code)
   const [selected, setSelected] = useState(() => new Set());
 
-  // sort
-  const [returnedSortDir, setReturnedSortDir] = useState("desc");
+  // Sort direction for Returned column
+  const [returnedSortDir, setReturnedSortDir] = useState("desc"); // asc / desc
 
   const navigate = useNavigate();
 
-  // keep a ref to the active subscription objects so we can remove them
-  const subsRef = useRef([]);
-  const abortRef = useRef(null);
+  /** -------------------- LOAD (SERVER-SIDE) -------------------- **/
+  async function load(includeCount = true) {
+    setLoading(true);
+    try {
+      let query = supabase
+        .from("v_live_barcodes_enriched")
+        .select("*", { count: includeCount ? "exact" : undefined });
 
-  /** build server query filters */
-  const buildQuery = useCallback((builder) => {
-    // status filter mapping
-    if (statusFilter === "available") builder.eq("status", "available");
-    else if (statusFilter === "returned") builder.eq("status", "returned");
-    else if (statusFilter === "returned_no_barcode") {
-      builder.eq("status", "returned").eq("is_no_barcode_return", true);
-    } else {
-      // 'all' - but if you want to restrict to available/returned only:
-      // builder.in("status", ["available","returned"]);
-    }
-
-    // date filters on produced_at (server side)
-    if (debouncedFrom) {
-      // expecting local datetime-local string -> convert to ISO
-      builder.gte("produced_at", new Date(debouncedFrom).toISOString());
-    }
-    if (debouncedTo) {
-      builder.lte("produced_at", new Date(debouncedTo).toISOString());
-    }
-
-    // search: try packet_code, finished_good_name, bin_code
-    if (debouncedQ && debouncedQ.trim()) {
-      const like = `%${debouncedQ.trim()}%`;
-      // Use ilike for case-insensitive matching (Postgres)
-      builder.or(
-        `packet_code.ilike.${like},finished_good_name.ilike.${like},bin_code.ilike.${like}`
-      );
-    }
-
-    return builder;
-  }, [statusFilter, debouncedFrom, debouncedTo, debouncedQ]);
-
-  /** fetch one page (server side pagination) */
-  const loadPage = useCallback(
-    async (pageToLoad = page) => {
-      setLoading(true);
-      setErr("");
-      if (abortRef.current) {
-        try { abortRef.current.abort(); } catch {}
+      // 1. Status Filter
+      if (statusFilter === "available") {
+        query = query.eq("status", "available");
+      } else if (statusFilter === "returned") {
+        query = query.eq("status", "returned").not("is_no_barcode_return", "eq", true);
+      } else if (statusFilter === "returned_no_barcode") {
+        query = query.eq("status", "returned").eq("is_no_barcode_return", true);
+      } else {
+        // "all" -> usually implies available + returned, based on original code
+        // Original code: .in("status", ["available", "returned"])
+        query = query.in("status", ["available", "returned"]);
       }
-      const controller = new AbortController();
-      abortRef.current = controller;
 
-      try {
-        const from = (pageToLoad - 1) * PAGE_SIZE;
-        const to = from + PAGE_SIZE - 1;
-
-        // Initialize base select while requesting exact count
-        let query = supabase
-          .from("v_live_barcodes_enriched")
-          .select("*", { count: "exact" })
-          .range(from, to);
-
-        // apply filters
-        query = buildQuery(query);
-
-        // apply ordering by returned_at (nulls last): order by returned_at asc/desc
-        // Supabase/Postgres: .order('returned_at', { ascending: returnedSortDir === 'asc' })
-        query = query.order("returned_at", {
-          ascending: returnedSortDir === "asc",
-        });
-
-        const { data, error, count } = await query;
-
-        if (error) {
-          throw error;
-        }
-
-        setRows(data || []);
-        setTotalCount(typeof count === "number" ? count : (data || []).length);
-        setPage(pageToLoad);
-      } catch (e) {
-        if (e.name === "AbortError") {
-          // ignore
-        } else {
-          console.error(e);
-          setErr(String(e));
-          setRows([]);
-          setTotalCount(0);
-        }
-      } finally {
-        setLoading(false);
-        abortRef.current = null;
+      // 2. Date Range (produced_at)
+      if (fromDate) {
+        query = query.gte("produced_at", fromDate);
       }
-    },
-    [buildQuery, page, returnedSortDir]
-  );
+      if (toDate) {
+        query = query.lte("produced_at", toDate);
+      }
 
-  /** load when filters/page/sort change */
+      // 3. Search (q)
+      if (q.trim()) {
+        const term = `%${q.trim()}%`;
+        // ILIKE on multiple columns using OR syntax
+        query = query.or(`packet_code.ilike.${term},finished_good_name.ilike.${term},bin_code.ilike.${term}`);
+      }
+
+      // 4. Sorting
+      query = query.order("returned_at", { ascending: returnedSortDir === "asc", nullsFirst: false });
+      query = query.order("produced_at", { ascending: false });
+
+      // 5. Pagination
+      const from = (page - 1) * PAGE_SIZE;
+      const to = from + PAGE_SIZE - 1;
+      query = query.range(from, to);
+
+      const { data, error, count } = await query;
+
+      if (error) throw error;
+
+      setRows(data || []);
+      if (count !== null && count !== undefined) setTotalCount(count);
+    } catch (e) {
+      console.error(e);
+      push(e.message || String(e), "err");
+      setRows([]);
+      if (includeCount) setTotalCount(0);
+    } finally {
+      setLoading(false);
+    }
+  }
+
+  /** -------------------- REALTIME + REFRESH -------------------- **/
+  // Load with count when filters change
   useEffect(() => {
-    loadPage(1); // reset to page 1 whenever filters change
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [debouncedQ, statusFilter, debouncedFrom, debouncedTo, returnedSortDir]);
+    setPage(1); // Reset to page 1 when filters change
+    load(true); // Include count
+  }, [q, statusFilter, fromDate, toDate, returnedSortDir]);
 
+  // Load without count when only page changes
   useEffect(() => {
-    loadPage(page);
-  }, [page, loadPage]);
+    load(false); // Skip count for faster pagination
+  }, [page]);
 
-  /** realtime subscription: refresh current page when relevant tables change */
+  // Realtime subscriptions
   useEffect(() => {
-    // cleanup old subs
-    subsRef.current.forEach((s) => {
-      try { supabase.removeChannel(s); } catch {}
-    });
-    subsRef.current = [];
+    const c1 = supabase
+      .channel("rt:packets_live")
+      .on(
+        "postgres_changes",
+        { event: "*", schema: "public", table: "packets" },
+        () => load(true)
+      )
+      .subscribe();
 
-    const subscribeAndPush = (channelName, table) => {
-      const ch = supabase
-        .channel(channelName)
-        .on(
-          "postgres_changes",
-          { event: "*", schema: "public", table },
-          () => {
-            // refetch current page (not all rows)
-            loadPage(page);
-          }
-        )
-        .subscribe();
-      subsRef.current.push(ch);
-      return ch;
-    };
-
-    subscribeAndPush("rt:packets", "packets");
-    subscribeAndPush("rt:ledger", "stock_ledger");
+    const c2 = supabase
+      .channel("rt:ledger_live")
+      .on(
+        "postgres_changes",
+        { event: "*", schema: "public", table: "stock_ledger" },
+        () => load(true)
+      )
+      .subscribe();
 
     return () => {
-      subsRef.current.forEach((s) => {
-        try { supabase.removeChannel(s); } catch {}
-      });
-      subsRef.current = [];
+      supabase.removeChannel(c1);
+      supabase.removeChannel(c2);
     };
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [page, debouncedQ, statusFilter, debouncedFrom, debouncedTo, returnedSortDir]);
+  }, []);
 
-  /** ---------------- SELECTION ---------------- */
+  /** -------------------- SELECTION -------------------- **/
   const allVisibleSelected =
     rows.length > 0 && rows.every((r) => selected.has(r.packet_code));
   const someVisibleSelected =
@@ -202,16 +148,13 @@ export default function LiveBarcodes() {
   }
 
   function toggleVisible(checked) {
-    setSelected((prev) => {
-      const next = new Set(prev);
-      rows.forEach((r) => {
-        if (checked) next.add(r.packet_code);
-        else next.delete(r.packet_code);
-      });
-      return next;
-    });
+    const next = new Set(selected);
+    if (checked) rows.forEach((r) => next.add(r.packet_code));
+    else rows.forEach((r) => next.delete(r.packet_code));
+    setSelected(next);
   }
 
+  /** -------------------- CLEAR FILTER -------------------- **/
   function clearFilters() {
     setQ("");
     setFromDate("");
@@ -220,31 +163,33 @@ export default function LiveBarcodes() {
     setPage(1);
   }
 
-  /** export the current server-filtered set **(streams in chunks)** */
-  async function exportAllFilteredRows() {
-    setLoading(true);
+  /** -------------------- EXPORT / PRINT -------------------- **/
+  async function exportRows() {
+    // For export, we probably want ALL matching rows, not just the current page.
+    // We need to fetch them.
+    push("Fetching all rows for export...", "ok");
     try {
-      const all = [];
-      let offset = 0;
-      while (true) {
-        let qbuilder = supabase
-          .from("v_live_barcodes_enriched")
-          .select("*")
-          .range(offset, offset + FETCH_CHUNK - 1);
-        qbuilder = buildQuery(qbuilder);
-        qbuilder = qbuilder.order("returned_at", {
-          ascending: returnedSortDir === "asc",
-        });
+      let query = supabase
+        .from("v_live_barcodes_enriched")
+        .select("*");
 
-        const { data, error } = await qbuilder;
-        if (error) throw error;
-        if (!data || data.length === 0) break;
-        all.push(...data);
-        if (data.length < FETCH_CHUNK) break;
-        offset += FETCH_CHUNK;
+      // Re-apply filters (duplicate logic, could be extracted)
+      if (statusFilter === "available") query = query.eq("status", "available");
+      else if (statusFilter === "returned") query = query.eq("status", "returned").not("is_no_barcode_return", "eq", true);
+      else if (statusFilter === "returned_no_barcode") query = query.eq("status", "returned").eq("is_no_barcode_return", true);
+      else query = query.in("status", ["available", "returned"]);
+
+      if (fromDate) query = query.gte("produced_at", fromDate);
+      if (toDate) query = query.lte("produced_at", toDate);
+      if (q.trim()) {
+        const term = `%${q.trim()}%`;
+        query = query.or(`packet_code.ilike.${term},finished_good_name.ilike.${term},bin_code.ilike.${term}`);
       }
 
-      const csv = all.map((r) => ({
+      const { data, error } = await query;
+      if (error) throw error;
+
+      const csvData = (data || []).map((r) => ({
         barcode: r.packet_code,
         item: r.finished_good_name,
         bin: r.bin_code,
@@ -252,37 +197,75 @@ export default function LiveBarcodes() {
         returned_at: fmtDate(r.returned_at),
         produced_at: fmtDate(r.produced_at),
       }));
-      downloadCSV("live_barcodes.csv", csv);
+      downloadCSV("live_barcodes.csv", csvData);
+      push("Export complete", "ok");
     } catch (e) {
-      console.error(e);
-      setErr(String(e));
-    } finally {
-      setLoading(false);
+      push("Export failed: " + e.message, "err");
     }
   }
 
   function downloadSelected() {
-    const chosen = Array.from(selected);
-    if (!chosen.length) return alert("Select barcodes first");
-    const codes = chosen;
-    // we can optionally fetch names for missing ones from server
-    // for simplicity, send codes only and let labels page fetch names if needed
-    navigate("/labels", { state: { codes, namesByCode: {}, mode: "download" } });
+    // For selected, we have the IDs (packet_codes) in `selected` Set.
+    // But we need the names. We might not have all names if selected items are on other pages.
+    // However, the previous implementation assumed we had them in `filtered`.
+    // With server-side pagination, we only have `rows`.
+    // If the user selects items, goes to next page, selects more, then downloads...
+    // We need to fetch the details for ALL selected items.
+
+    if (!selected.size) return push("Select barcodes first", "warn");
+
+    // We can pass the codes to the labels page, and let it fetch? 
+    // Or we fetch here. The Labels page expects { codes, namesByCode }.
+    // Let's fetch the missing details if needed, or just pass what we have if we assume selection is mostly from current view.
+    // Better approach: Fetch details for all selected codes.
+
+    (async () => {
+      const codes = Array.from(selected);
+      const { data, error } = await supabase
+        .from("v_live_barcodes_enriched")
+        .select("packet_code, finished_good_name")
+        .in("packet_code", codes);
+
+      if (error) {
+        push("Failed to prepare download: " + error.message, "err");
+        return;
+      }
+
+      const namesByCode = Object.fromEntries(
+        (data || []).map(r => [r.packet_code, r.finished_good_name || ""])
+      );
+      navigate("/labels", { state: { codes, namesByCode, mode: "download" } });
+    })();
   }
 
   function printSelected() {
-    const chosen = Array.from(selected);
-    if (!chosen.length) return alert("Select barcodes first");
-    const codes = chosen;
-    navigate("/labels", { state: { codes, namesByCode: {}, mode: "print" } });
+    if (!selected.size) return push("Select barcodes first", "warn");
+
+    (async () => {
+      const codes = Array.from(selected);
+      const { data, error } = await supabase
+        .from("v_live_barcodes_enriched")
+        .select("packet_code, finished_good_name")
+        .in("packet_code", codes);
+
+      if (error) {
+        push("Failed to prepare print: " + error.message, "err");
+        return;
+      }
+
+      const namesByCode = Object.fromEntries(
+        (data || []).map(r => [r.packet_code, r.finished_good_name || ""])
+      );
+      navigate("/labels", { state: { codes, namesByCode, mode: "print" } });
+    })();
   }
 
+  /** -------------------- SORT HANDLER FOR RETURNED -------------------- **/
   function toggleReturnedSort() {
-    setReturnedSortDir((d) => (d === "asc" ? "desc" : "asc"));
+    setReturnedSortDir((dir) => (dir === "asc" ? "desc" : "asc"));
   }
 
   const returnedArrow = returnedSortDir === "asc" ? "↑" : "↓";
-
   const totalPages = Math.max(1, Math.ceil(totalCount / PAGE_SIZE));
 
   return (
@@ -291,30 +274,33 @@ export default function LiveBarcodes() {
         <div className="hd">
           <b>Live Barcodes</b>
 
+          {/* Filter Controls */}
           <div className="row" style={{ gap: 8, flexWrap: "wrap" }}>
             <input
               placeholder="Search barcode / item / bin…"
               value={q}
-              onChange={(e) => setQ(e.target.value)}
+              onChange={(e) => { setQ(e.target.value); setPage(1); }}
               style={{ minWidth: 240 }}
             />
 
+            {/* Date-time with seconds */}
             <input
               type="datetime-local"
               step="1"
               value={fromDate}
-              onChange={(e) => setFromDate(e.target.value)}
+              onChange={(e) => { setFromDate(e.target.value); setPage(1); }}
             />
             <input
               type="datetime-local"
               step="1"
               value={toDate}
-              onChange={(e) => setToDate(e.target.value)}
+              onChange={(e) => { setToDate(e.target.value); setPage(1); }}
             />
 
+            {/* Status + No-barcode filter */}
             <select
               value={statusFilter}
-              onChange={(e) => setStatusFilter(e.target.value)}
+              onChange={(e) => { setStatusFilter(e.target.value); setPage(1); }}
             >
               <option value="all">All Statuses</option>
               <option value="available">Available</option>
@@ -326,7 +312,7 @@ export default function LiveBarcodes() {
               Clear Filters
             </button>
 
-            <button className="btn outline" onClick={exportAllFilteredRows} disabled={loading}>
+            <button className="btn outline" onClick={exportRows} disabled={loading}>
               Export CSV
             </button>
 
@@ -335,7 +321,7 @@ export default function LiveBarcodes() {
               onClick={downloadSelected}
               disabled={!selected.size}
             >
-              Download Selected
+              Download Selected ({selected.size})
             </button>
 
             <button
@@ -343,14 +329,13 @@ export default function LiveBarcodes() {
               onClick={printSelected}
               disabled={!selected.size}
             >
-              🖨️ Print
+              🖨️ Print ({selected.size})
             </button>
           </div>
         </div>
 
+        {/* TABLE */}
         <div className="bd" style={{ overflow: "auto" }}>
-          {!!err && <div className="badge err">{err}</div>}
-
           <table className="table">
             <thead>
               <tr>
@@ -367,6 +352,7 @@ export default function LiveBarcodes() {
                 <th>Bin</th>
                 <th>Status</th>
                 <th>No-Barcode</th>
+                {/* Clickable Returned header with arrow */}
                 <th
                   onClick={toggleReturnedSort}
                   style={{ cursor: "pointer", whiteSpace: "nowrap" }}
@@ -410,6 +396,7 @@ export default function LiveBarcodes() {
           </table>
         </div>
 
+        {/* Pagination */}
         <div
           className="row"
           style={{ justifyContent: "center", marginTop: 12, gap: 10 }}
@@ -422,7 +409,7 @@ export default function LiveBarcodes() {
             ← Prev
           </button>
           <span>
-            Page {page} / {totalPages} ({totalCount} total matching)
+            Page {page} / {totalPages} ({totalCount} total)
           </span>
           <button
             className="btn ghost"

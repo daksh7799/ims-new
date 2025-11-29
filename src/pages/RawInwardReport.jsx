@@ -28,6 +28,7 @@ export default function RawInwardReport() {
         )
         .eq("purchase_date", date) // ✅ exact date match (fixes timezone issue)
         .neq("vendor_name", "Stock Adjustment")
+        .neq("vendor_name", "mismatch")
         .order("purchase_date", { ascending: true });
 
       if (error) throw error;
