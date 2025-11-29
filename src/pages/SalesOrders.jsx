@@ -25,30 +25,75 @@ async function fetchAllFinishedGoods(limit=1000){
   return out
 }
 
+/**
+ * New: server-side .in(...) with fallback to a large-range fetch.
+ * Returns: { [normalizeName(finished_good_name)]: [{ bin_code, qty }, ...], ... }
+ */
 async function getBinsForFgNames(names){
-  if(!names.length) return {}
-  const { data: allBins, error } = await supabase
-    .from('v_bin_inventory')
-    .select('finished_good_name, bin_code, produced_at')
-  if(error){ console.error('v_bin_inventory', error); return {} }
+  if(!names || !names.length) return {}
+
+  // Ensure unique names and use raw names for server-side .in()
+  const uniqueNames = Array.from(new Set(names.map(n => String(n || '').trim()).filter(Boolean)))
+  if(!uniqueNames.length) return {}
+
+  let allBins = null
+  let err = null
+
+  // 1) Preferred: ask server to return only rows for required finished_good_name values.
+  try {
+    const res = await supabase
+      .from('v_bin_inventory')
+      .select('finished_good_name, bin_code, produced_at')
+      .in('finished_good_name', uniqueNames)
+    allBins = res.data
+    err = res.error
+    console.debug('getBinsForFgNames: .in() returned', (allBins || []).length, 'rows for', uniqueNames.length, 'names')
+  } catch (e) {
+    console.warn('getBinsForFgNames: .in() failed', e)
+    allBins = null
+    err = e
+  }
+
+  // 2) Fallback: explicit large-range fetch to avoid silent truncation
+  if(!allBins || allBins.length === 0) {
+    console.debug('getBinsForFgNames: falling back to .range(0,50000)')
+    try {
+      const res2 = await supabase
+        .from('v_bin_inventory')
+        .select('finished_good_name, bin_code, produced_at')
+        .range(0, 50000) // adjust upper bound if you have more rows
+      allBins = res2.data
+      err = err || res2.error
+      console.debug('getBinsForFgNames: .range() returned', (allBins || []).length, 'rows')
+    } catch (e) {
+      console.warn('getBinsForFgNames: .range() failed', e)
+      allBins = allBins || []
+      err = err || e
+    }
+  }
+
+  if(err) console.warn('getBinsForFgNames: fetch error', err)
+  allBins = allBins || []
+
+  // Aggregate by normalized finished_good_name
+  const wanted = new Set(uniqueNames.map(normalizeName))
+  const bucket = {}
+  for(const r of allBins){
+    const raw = String(r.finished_good_name || '').trim()
+    if(!raw) continue
+    const key = normalizeName(raw)
+    if(!wanted.has(key)) continue
+    const bin = r.bin_code || '—'
+    bucket[key] = bucket[key] || {}
+    bucket[key][bin] = (bucket[key][bin] || 0) + 1
+  }
 
   const out = {}
-  const wanted = new Set(names.map(normalizeName))
-  ;(allBins||[]).forEach(r=>{
-    const fgKey = normalizeName(r.finished_good_name)
-    if(!wanted.has(fgKey)) return
-    if(!out[fgKey]) out[fgKey] = {}
-    const bin = r.bin_code || '—'
-    if(!out[fgKey][bin]) out[fgKey][bin] = { qty:0 }
-    out[fgKey][bin].qty += 1
+  Object.entries(bucket).forEach(([k, bins])=>{
+    out[k] = Object.entries(bins).map(([bin_code, qty])=>({ bin_code, qty }))
   })
-  const agg = {}
-  Object.entries(out).forEach(([fgKey,bins])=>{
-    agg[fgKey] = Object.entries(bins).map(([bin_code,v])=>({
-      bin_code, qty:v.qty
-    }))
-  })
-  return agg
+
+  return out
 }
 
 function extractBrand(fgName) {

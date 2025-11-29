@@ -21,6 +21,8 @@ import FGInventory from './pages/FGInventory.jsx'
 import Labels from './pages/Labels.jsx'
 import BlendRecipes from './pages/BlendRecipes.jsx'
 import BlendManufacture from './pages/BlendManufacture.jsx'
+import BillCheck from './pages/BillCheck.jsx' // 👈 NEW MODULE
+import Ledger from './pages/Ledger.jsx' // 👈 NEW MODULE
 
 // Admin
 import AdminUsers from './admin/AdminUsers.jsx'
@@ -57,6 +59,8 @@ const LINKS = [
   { key: 'inv-fg', path: '/inv-fg', label: 'FG Inventory' },
   { key: 'blends', path: '/blends', label: 'Blend Recipes' },
   { key: 'blend-mfg', path: '/blend-manufacture', label: 'Blend Manufacture' },
+  { key: 'bill-check', path: '/bill-check', label: 'Bill Check' },
+  { key: 'ledger', path: '/ledger', label: 'Ledger' }, // 👈 ADDED HERE
 
   // utilities
   { key: 'trace', path: '/trace', label: 'Packet Trace' },
@@ -142,6 +146,8 @@ export default function App() {
             {canSee('inv-fg') && <Route path="/inv-fg" element={<FGInventory />} />}
             {canSee('blends') && <Route path="/blends" element={<BlendRecipes />} />}
             {canSee('blend-mfg') && <Route path="/blend-manufacture" element={<BlendManufacture />} />}
+            {canSee('ledger') && <Route path="/ledger" element={<Ledger />} />}
+
 
             {canSee('trace') && <Route path="/trace" element={<PacketTrace />} />}
             {canSee('raw-adjust') && <Route path="/raw-adjust" element={<RawAdjust />} />}
@@ -153,7 +159,7 @@ export default function App() {
             {canSee('admin') && <Route path="/admin" element={<AdminUsers />} />}
             {canSee('raw-inward-report') && <Route path="/raw-inward-report" element={<RawInwardReport />} />}
             {canSee('daily-report') && (<Route path="/daily-report" element={<DailyStockReport />} />)}
-
+            {canSee('bill-check') && <Route path="/bill-check" element={<BillCheck />} />}
 
             {/* Keep DailyStockCheck as a route if you want direct access (optional).
                 It's not included in the sidebar links above, so it won't show there.

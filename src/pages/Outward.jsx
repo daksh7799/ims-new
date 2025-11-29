@@ -14,6 +14,7 @@ function useQuery() {
   return useMemo(() => new URLSearchParams(search), [search])
 }
 
+// simple normalizer (used only for keys in the results map)
 const norm = s => String(s ?? '').trim().toLowerCase()
 
 function extractBrand(fgName) {
@@ -72,6 +73,7 @@ export default function Outward() {
     setOrderHdr(hdrs?.[0] || null)
     if (e2) console.error('v_so_lines', e2)
     setLines(ls || [])
+    console.debug('loadOne: loaded lines', (ls || []).length)
   }
 
   useEffect(() => { loadOrders() }, [pendingOnly])
@@ -140,7 +142,7 @@ export default function Outward() {
         return
       }
 
-      // 1) allocate to SO (this will fail on overscan or truly duplicate packet_id)
+      // 1) allocate to SO
       const { error: allocErr } = await supabase.rpc('allocate_packet_to_order', {
         p_so_id: Number(soId),
         p_packet_code: pkt
@@ -150,7 +152,7 @@ export default function Outward() {
         return
       }
 
-      // 2) mark outward (stock movement)
+      // 2) mark outward
       const { data, error: outErr } = await supabase.rpc('packet_outward_scan', {
         p_packet_code: pkt,
         p_note: `Outwarded for SO ${soId}`
@@ -165,7 +167,6 @@ export default function Outward() {
       await loadOne(soId)
       await loadBinsForCurrentLines()
 
-      // refresh list if we just cleared
       if (pendingOnly) {
         const approxCleared = (totals.shipped + 1) >= totals.ordered
         if (approxCleared) await loadOrders()
@@ -193,7 +194,7 @@ export default function Outward() {
     return () => clearTimeout(typing.current)
   }, [scan, auto, soId])
 
-  /** -------------------- BIN INVENTORY -------------------- **/
+  /** -------------------- BIN INVENTORY (exact server-side fetch, no fuzzy) -------------------- **/
   async function loadBinsForCurrentLines() {
     setBinsByFg({})
     const fgNames = Array.from(new Set((lines || [])
@@ -203,16 +204,60 @@ export default function Outward() {
 
     setLoadingBins(true)
     try {
-      const { data: allBins, error } = await supabase
-        .from('v_bin_inventory')
-        .select('finished_good_name, bin_code, produced_at')
-      if (error) { console.warn('v_bin_inventory fetch error:', error); return }
+      let allBins = null
+      let error = null
+
+      // Preferred: server-side exact-match for only required finished_good_name values.
+      try {
+        const res = await supabase
+          .from('v_bin_inventory')
+          .select('finished_good_name, bin_code, produced_at')
+          .in('finished_good_name', fgNames)
+        allBins = res.data
+        error = res.error
+        console.debug('v_bin_inventory .in() returned rows:', (allBins || []).length)
+      } catch (e) {
+        console.warn('v_bin_inventory .in() failed', e)
+        allBins = null
+        error = e
+      }
+
+      // Fallback: explicitly fetch a large range to avoid silent truncation.
+      if (!allBins || allBins.length === 0) {
+        console.debug('Fallback range fetch (0..5000) because .in() returned 0 rows or failed')
+        const res2 = await supabase
+          .from('v_bin_inventory')
+          .select('finished_good_name, bin_code, produced_at')
+          .range(0, 8000) // adjust if you have >5k rows
+        allBins = res2.data
+        error = error || res2.error
+        console.debug('v_bin_inventory .range() returned rows:', (allBins || []).length)
+      }
+
+      if (error) {
+        console.warn('v_bin_inventory fetch error:', error)
+        // continue with whatever we have
+      }
+      allBins = allBins || []
+
+      console.debug('loadBinsForCurrentLines: wanted fgNames:', fgNames)
+      console.debug('loadBinsForCurrentLines: sample normalized bin names:',
+        (allBins || []).slice(0, 12).map(r => ({ raw: r.finished_good_name, n: norm(r.finished_good_name) })))
 
       const results = {}
       for (const rawName of fgNames) {
+        // Use server-side exact matches only (raw string equality as returned by .in())
+        // We still compute key using norm(rawName) so UI lookups match.
         const key = norm(rawName)
-        const rows = (allBins || []).filter(r => norm(r.finished_good_name) === key)
+        const rows = (allBins || []).filter(r => String(r.finished_good_name || '').trim() === rawName)
 
+        if (!rows.length) {
+          console.debug('No bins found for (exact) ->', rawName)
+        } else {
+          console.debug('Exact matched', rows.length, 'rows for', rawName)
+        }
+
+        // aggregate per bin_code
         const perBin = new Map()
         for (const r of rows) {
           const bin = r.bin_code || '—'
@@ -233,8 +278,10 @@ export default function Outward() {
           const tb = b.oldest_produced_at ? Date.parse(b.oldest_produced_at) : Number.POSITIVE_INFINITY
           return ta !== tb ? ta - tb : String(a.bin_code).localeCompare(String(b.bin_code))
         })
+
         results[key] = arr
       }
+
       setBinsByFg(results)
     } finally {
       setLoadingBins(false)
@@ -243,7 +290,7 @@ export default function Outward() {
 
   useEffect(() => { loadBinsForCurrentLines() }, [JSON.stringify(lines)])
 
-  /** -------------------- PRINT FEATURE -------------------- **/
+  /** -------------------- PRINT FEATURE (uses same server-side fetch) -------------------- **/
   async function printSO() {
     if (!orderHdr) return alert('No order selected')
     try {
@@ -282,26 +329,54 @@ export default function Outward() {
       if (!rows.length) { alert('No pending lines to print'); return }
 
       const fgNames = rows.map(l => l.finished_good_name).filter(Boolean)
-      const binsByFgLocal = await (async () => {
-        const { data: allBins, error } = await supabase
+
+      // ======== SAFER BIN FETCH FOR PRINT ========
+      // Prefer server-side exact-match on finished_good_name so we don't hit page-size truncation.
+      let allBinsForPrint = null
+      let fetchErr = null
+      try {
+        const res = await supabase
           .from('v_bin_inventory')
           .select('finished_good_name, bin_code, produced_at')
-        if (error) { console.warn('v_bin_inventory fetch error:', error); return {} }
-        const out = {}
-        const wanted = new Set(fgNames.map(n => norm(n)))
-        ;(allBins || []).forEach(r => {
-          const key = norm(r.finished_good_name)
-          if (!wanted.has(key)) return
-          out[key] = out[key] || {}
-          const bin = r.bin_code || '—'
-          out[key][bin] = (out[key][bin] || 0) + 1
-        })
-        const agg = {}
-        Object.entries(out).forEach(([k, bins]) => {
-          agg[k] = Object.entries(bins).map(([bin_code, qty]) => ({ bin_code, qty }))
-        })
-        return agg
-      })()
+          .in('finished_good_name', fgNames)
+        allBinsForPrint = res.data
+        fetchErr = res.error
+        console.debug('printSO: v_bin_inventory .in() returned rows:', (allBinsForPrint || []).length)
+      } catch (e) {
+        console.warn('printSO: v_bin_inventory .in() failed', e)
+        allBinsForPrint = null
+        fetchErr = e
+      }
+
+      // fallback to large range if .in() didn't return results (adjust upper bound if needed)
+      if (!allBinsForPrint || allBinsForPrint.length === 0) {
+        console.debug('printSO: fallback range fetch (0..5000) to avoid truncation')
+        const res2 = await supabase
+          .from('v_bin_inventory')
+          .select('finished_good_name, bin_code, produced_at')
+          .range(0, 8000)
+        allBinsForPrint = res2.data
+        fetchErr = fetchErr || res2.error
+        console.debug('printSO: v_bin_inventory .range() returned rows:', (allBinsForPrint || []).length)
+      }
+      allBinsForPrint = allBinsForPrint || []
+      if (fetchErr) console.warn('printSO: v_bin_inventory fetch error:', fetchErr)
+
+      // build binsByFgLocal keyed by normalized name (same normalization used elsewhere)
+      const binsByFgLocal = {}
+      const wantedNorms = new Set(fgNames.map(n => norm(n)))
+      ;(allBinsForPrint || []).forEach(r => {
+        const k = norm(r.finished_good_name)
+        if (!wantedNorms.has(k)) return
+        binsByFgLocal[k] = binsByFgLocal[k] || {}
+        const bin = r.bin_code || '—'
+        binsByFgLocal[k][bin] = (binsByFgLocal[k][bin] || 0) + 1
+      })
+      // convert to array-of-objects like the UI expects
+      Object.entries(binsByFgLocal).forEach(([k, bins]) => {
+        binsByFgLocal[k] = Object.entries(bins).map(([bin_code, qty]) => ({ bin_code, qty }))
+      })
+      // ======== end safer fetch ========
 
       const byBrand = {}
       for (const l of rows) {
