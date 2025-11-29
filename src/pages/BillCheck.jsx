@@ -128,7 +128,7 @@ export default function BillCheck() {
             // 1. Fetch lines
             const { data: lines, error: linesError } = await supabase
                 .from("raw_inward")
-                .select("id, qty, rate, raw_materials(name, unit, gst_rate, accounting_name)")
+                .select("id, qty, rate, raw_material_id, raw_materials(id, name, unit, gst_rate, accounting_name)")
                 .eq("vendor_id", bill.vendor_id)
                 .eq("bill_no", bill.bill_no);
 
@@ -153,7 +153,30 @@ export default function BillCheck() {
 
             if (vendorError) throw vendorError;
 
-            setBillDetails(lines.map(l => ({ ...l, rate: l.rate || "" })));
+            // 4. Auto-fill latest rates for missing ones
+            const linesWithRates = await Promise.all(lines.map(async (l) => {
+                if (l.rate) return l; // Already has rate
+
+                // Fetch latest rate for this material
+                const { data: latest } = await supabase
+                    .from("raw_inward")
+                    .select("rate")
+                    .eq("raw_material_id", l.raw_material_id) // Assuming raw_materials relation returns id? Wait, select above didn't fetch raw_material_id explicitly but it might be in 'raw_inward' columns. 
+                    // The select was "id, qty, rate, raw_materials(name...)"
+                    // I need to make sure I have raw_material_id. 
+                    // Let's check the select query in step 1.
+                    // It is: .select("id, qty, rate, raw_materials(name, unit, gst_rate, accounting_name)")
+                    // It does NOT explicitly select raw_material_id. I should add it.
+                    .neq("rate", null)
+                    .lte("purchase_date", bill.purchase_date)
+                    .order("purchase_date", { ascending: false })
+                    .limit(1)
+                    .maybeSingle();
+
+                return { ...l, rate: latest?.rate || "" };
+            }));
+
+            setBillDetails(linesWithRates);
             setVendorDetails(vendor);
 
             if (meta) {
