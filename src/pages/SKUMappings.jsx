@@ -11,6 +11,11 @@ export default function SKUMappings() {
     const [loading, setLoading] = useState(true)
     const [q, setQ] = useState('')
 
+    // Pagination state
+    const [page, setPage] = useState(0)
+    const [pageSize, setPageSize] = useState(100)
+    const [totalCount, setTotalCount] = useState(0)
+
     // Form state for creating new SKU
     const [sku, setSku] = useState('')
     const [description, setDescription] = useState('')
@@ -22,54 +27,74 @@ export default function SKUMappings() {
     const [editDescription, setEditDescription] = useState('')
     const [editItems, setEditItems] = useState([])
 
-    useEffect(() => { load() }, [])
+    useEffect(() => { load() }, [page, pageSize, q])
 
     async function load() {
         setLoading(true)
-        // Fetch all SKU mappings with their items
-        const { data: skuData, error: err1 } = await supabase
-            .from('sku_mappings')
-            .select('*')
-            .order('created_at', { ascending: false })
+        try {
+            // Build query with search filter
+            let countQuery = supabase.from('sku_mappings').select('*', { count: 'exact', head: true })
+            let dataQuery = supabase.from('sku_mappings').select('*').order('created_at', { ascending: false })
 
-        if (err1) {
-            console.error(err1)
-            setLoading(false)
-            return
-        }
+            // Apply search filter if present
+            if (q.trim()) {
+                const searchTerm = `%${q.trim()}%`
+                countQuery = countQuery.ilike('sku', searchTerm)
+                dataQuery = dataQuery.ilike('sku', searchTerm)
+            }
 
-        // Fetch all SKU mapping items with FG names
-        const { data: itemsData, error: err2 } = await supabase
-            .from('sku_mapping_items')
-            .select('*, finished_goods(id, name)')
-            .order('id')
+            // Get total count
+            const { count, error: countErr } = await countQuery
 
-        if (err2) {
-            console.error(err2)
-            setLoading(false)
-            return
-        }
+            if (countErr) throw countErr
+            setTotalCount(count || 0)
 
-        // Group items by SKU
-        const itemsBySku = {}
-        itemsData?.forEach(item => {
-            if (!itemsBySku[item.sku]) itemsBySku[item.sku] = []
-            itemsBySku[item.sku].push({
-                id: item.id,
-                finished_good_id: item.finished_good_id,
-                finished_good_name: item.finished_goods?.name || 'Unknown',
-                qty_per_sku: item.qty_per_sku
+            // Fetch paginated SKU mappings
+            const { data: skuData, error: err1 } = await dataQuery
+                .range(page * pageSize, (page + 1) * pageSize - 1)
+
+            if (err1) throw err1
+            if (!skuData || skuData.length === 0) {
+                setMappings([])
+                setLoading(false)
+                return
+            }
+
+            // Fetch items only for the SKUs on this page
+            const skuCodes = skuData.map(s => s.sku)
+            const { data: itemsData, error: err2 } = await supabase
+                .from('sku_mapping_items')
+                .select('*, finished_goods(id, name)')
+                .in('sku', skuCodes)
+                .order('id')
+
+            if (err2) throw err2
+
+            // Group items by SKU
+            const itemsBySku = {}
+            itemsData?.forEach(item => {
+                if (!itemsBySku[item.sku]) itemsBySku[item.sku] = []
+                itemsBySku[item.sku].push({
+                    id: item.id,
+                    finished_good_id: item.finished_good_id,
+                    finished_good_name: item.finished_goods?.name || 'Unknown',
+                    qty_per_sku: item.qty_per_sku
+                })
             })
-        })
 
-        // Merge data
-        const merged = (skuData || []).map(s => ({
-            ...s,
-            items: itemsBySku[s.sku] || []
-        }))
+            // Merge data
+            const merged = (skuData || []).map(s => ({
+                ...s,
+                items: itemsBySku[s.sku] || []
+            }))
 
-        setMappings(merged)
-        setLoading(false)
+            setMappings(merged)
+        } catch (err) {
+            console.error('Load error:', err)
+            push(err.message, 'err')
+        } finally {
+            setLoading(false)
+        }
     }
 
     function addItem() {
@@ -304,7 +329,8 @@ export default function SKUMappings() {
             push(`Resolving ${allFgNames.length} finished goods...`, 'ok')
 
             const fgMap = {}
-            const CHUNK_SIZE_FG = 1000
+            // Reduced chunk size to avoid URL length limits (400 Bad Request)
+            const CHUNK_SIZE_FG = 100
             for (let i = 0; i < allFgNames.length; i += CHUNK_SIZE_FG) {
                 const chunk = allFgNames.slice(i, i + CHUNK_SIZE_FG)
                 const { data: foundFGs, error: fetchErr } = await supabase
@@ -319,26 +345,53 @@ export default function SKUMappings() {
                 })
             }
 
-            // Validate all FGs exist
-            const missing = []
-            for (const fgName of allFgNames) {
-                if (!fgMap[fgName.toLowerCase().trim()]) {
-                    missing.push(fgName)
+            // Validate all FGs exist and separate valid/invalid SKUs
+            const validSkuCodes = []
+            const failedRows = [] // { ...row, Error: '...' }
+
+            for (const skuCode of skuCodes) {
+                const data = skuGroups[skuCode]
+                let isValid = true
+                let errorMsg = ''
+
+                for (const item of data.items) {
+                    if (!fgMap[item.fgName.toLowerCase().trim()]) {
+                        isValid = false
+                        errorMsg = `Finished Good not found: ${item.fgName}`
+                        break
+                    }
+                }
+
+                if (isValid) {
+                    validSkuCodes.push(skuCode)
+                } else {
+                    // Add all rows for this SKU to failedRows
+                    for (const item of data.items) {
+                        failedRows.push({
+                            SKU: skuCode,
+                            'Finished Good': item.fgName,
+                            'Qty per SKU': item.qty,
+                            Description: data.description,
+                            Error: errorMsg
+                        })
+                    }
                 }
             }
 
-            if (missing.length > 0) {
-                throw new Error(`Finished goods not found: ${missing.slice(0, 5).join(', ')}${missing.length > 5 ? '...' : ''}`)
+            if (validSkuCodes.length === 0) {
+                // If everything failed, just throw error with sample
+                const sample = failedRows.slice(0, 3).map(r => `${r.SKU}: ${r.Error}`).join(', ')
+                throw new Error(`All ${skuCodes.length} SKUs failed validation. Sample errors: ${sample}`)
             }
 
-            // Insert SKUs and items in chunks
-            push(`Importing ${skuCodes.length} SKUs...`, 'ok')
+            // Insert VALID SKUs and items in chunks
+            push(`Importing ${validSkuCodes.length} valid SKUs...`, 'ok')
 
-            const CHUNK_SIZE_SKU = 50 // smaller chunk for writes to avoid timeout
+            const CHUNK_SIZE_SKU = 50
             let processed = 0
 
-            for (let i = 0; i < skuCodes.length; i += CHUNK_SIZE_SKU) {
-                const chunkCodes = skuCodes.slice(i, i + CHUNK_SIZE_SKU)
+            for (let i = 0; i < validSkuCodes.length; i += CHUNK_SIZE_SKU) {
+                const chunkCodes = validSkuCodes.slice(i, i + CHUNK_SIZE_SKU)
 
                 // 1. Upsert SKUs
                 const skuUpserts = chunkCodes.map(code => ({
@@ -353,7 +406,7 @@ export default function SKUMappings() {
 
                 if (err1) throw new Error(`Failed to upsert SKUs: ${err1.message}`)
 
-                // 2. Delete existing items for these SKUs (to handle updates/re-imports)
+                // 2. Delete existing items for these SKUs
                 const { error: err2 } = await supabase
                     .from('sku_mapping_items')
                     .delete()
@@ -383,11 +436,33 @@ export default function SKUMappings() {
 
                 processed += chunkCodes.length
                 if (processed % 500 === 0) {
-                    push(`Imported ${processed}/${skuCodes.length} SKUs...`, 'ok')
+                    push(`Imported ${processed}/${validSkuCodes.length} SKUs...`, 'ok')
                 }
             }
 
-            push(`Successfully imported ${skuCodes.length} SKUs!`, 'ok')
+            // Handle failures
+            if (failedRows.length > 0) {
+                push(`Imported ${validSkuCodes.length} SKUs. ${skuCodes.length - validSkuCodes.length} SKUs failed. Downloading error report...`, 'warn')
+
+                // Generate error CSV
+                const headers = ['SKU', 'Finished Good', 'Qty per SKU', 'Description', 'Error']
+                const csvContent = [
+                    headers.join(','),
+                    ...failedRows.map(r => [
+                        `"${r.SKU}"`,
+                        `"${r['Finished Good']}"`,
+                        r['Qty per SKU'],
+                        `"${r.Description}"`,
+                        `"${r.Error}"`
+                    ].join(','))
+                ].join('\n')
+
+                const blob = new Blob([csvContent], { type: 'text/csv;charset=utf-8;' })
+                saveAs(blob, 'sku_import_errors.csv')
+            } else {
+                push(`Successfully imported all ${validSkuCodes.length} SKUs!`, 'ok')
+            }
+
             load()
         } catch (err) {
             console.error(err)
@@ -396,14 +471,6 @@ export default function SKUMappings() {
             e.target.value = ''
         }
     }
-
-    const filtered = mappings.filter(m => {
-        const search = q.toLowerCase()
-        return !search ||
-            m.sku.toLowerCase().includes(search) ||
-            (m.description || '').toLowerCase().includes(search) ||
-            m.items.some(item => item.finished_good_name.toLowerCase().includes(search))
-    })
 
     return (
         <div className="grid">
@@ -487,13 +554,41 @@ export default function SKUMappings() {
             {/* List SKU Mappings */}
             <div className="card">
                 <div className="hd">
-                    <b>SKU Mappings ({filtered.length})</b>
-                    <input
-                        placeholder="Search SKU, description, or finished good…"
-                        value={q}
-                        onChange={e => setQ(e.target.value)}
-                        style={{ minWidth: 300 }}
-                    />
+                    <b>SKU Mappings</b>
+                    <div className="row" style={{ gap: 8, alignItems: 'center', flexWrap: 'wrap' }}>
+                        <input
+                            placeholder="Search SKU name…"
+                            value={q}
+                            onChange={e => { setQ(e.target.value); setPage(0) }}
+                            style={{ minWidth: 300 }}
+                        />
+                        <select value={pageSize} onChange={e => { setPageSize(Number(e.target.value)); setPage(0) }}>
+                            <option value="50">50 per page</option>
+                            <option value="100">100 per page</option>
+                            <option value="200">200 per page</option>
+                            <option value="500">500 per page</option>
+                        </select>
+                        <span className="s">
+                            Total: {totalCount} SKUs | Showing {page * pageSize + 1}-{Math.min((page + 1) * pageSize, totalCount)}
+                        </span>
+                        <div className="row" style={{ gap: 4 }}>
+                            <button
+                                className="btn ghost"
+                                onClick={() => setPage(p => Math.max(0, p - 1))}
+                                disabled={page === 0}
+                            >
+                                ← Prev
+                            </button>
+                            <span className="s">Page {page + 1} of {Math.ceil(totalCount / pageSize)}</span>
+                            <button
+                                className="btn ghost"
+                                onClick={() => setPage(p => p + 1)}
+                                disabled={(page + 1) * pageSize >= totalCount}
+                            >
+                                Next →
+                            </button>
+                        </div>
+                    </div>
                 </div>
                 <div className="bd" style={{ overflow: 'auto' }}>
                     <table className="table">
@@ -502,12 +597,11 @@ export default function SKUMappings() {
                                 <th>SKU</th>
                                 <th>Description</th>
                                 <th>Items</th>
-                                <th>Status</th>
                                 <th>Actions</th>
                             </tr>
                         </thead>
                         <tbody>
-                            {filtered.map(m => (
+                            {mappings.map(m => (
                                 <>
                                     <tr key={m.sku}>
                                         <td>
@@ -524,11 +618,6 @@ export default function SKUMappings() {
                                             </button>
                                         </td>
                                         <td>
-                                            <span className={`badge ${m.is_active ? '' : 'inactive'}`}>
-                                                {m.is_active ? 'Active' : 'Inactive'}
-                                            </span>
-                                        </td>
-                                        <td>
                                             <div className="row" style={{ gap: 4 }}>
                                                 {editingSku === m.sku ? (
                                                     <>
@@ -538,12 +627,6 @@ export default function SKUMappings() {
                                                 ) : (
                                                     <>
                                                         <button className="btn outline" onClick={() => startEdit(m)}>Edit</button>
-                                                        <button
-                                                            className="btn outline"
-                                                            onClick={() => toggleActive(m.sku, m.is_active)}
-                                                        >
-                                                            {m.is_active ? 'Deactivate' : 'Activate'}
-                                                        </button>
                                                         <button className="btn ghost" onClick={() => deleteSKU(m.sku)}>Delete</button>
                                                     </>
                                                 )}
@@ -552,7 +635,7 @@ export default function SKUMappings() {
                                     </tr>
                                     {expandedRows.has(m.sku) && (
                                         <tr key={`${m.sku}-details`}>
-                                            <td colSpan="5" style={{ background: 'var(--bg-secondary)', padding: 12 }}>
+                                            <td colSpan="4" style={{ background: 'var(--bg-secondary)', padding: 12 }}>
                                                 {editingSku === m.sku ? (
                                                     <div style={{ display: 'grid', gap: 10 }}>
                                                         <input
@@ -621,10 +704,10 @@ export default function SKUMappings() {
                                     )}
                                 </>
                             ))}
-                            {filtered.length === 0 && (
+                            {mappings.length === 0 && (
                                 <tr>
-                                    <td colSpan="5" style={{ color: 'var(--muted)' }}>
-                                        {loading ? 'Loading…' : 'No SKU mappings found'}
+                                    <td colSpan="4" style={{ color: 'var(--muted)' }}>
+                                        {loading ? 'Loading…' : q ? 'No SKUs found matching your search' : 'No SKU mappings found'}
                                     </td>
                                 </tr>
                             )}
