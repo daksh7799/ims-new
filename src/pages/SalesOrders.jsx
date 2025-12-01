@@ -5,95 +5,37 @@ import { supabase } from '../supabaseClient'
 import { downloadCSV } from '../utils/csv'
 import AsyncFGSelect from '../components/AsyncFGSelect.jsx'
 import { saveAs } from 'file-saver'
+import { useToast } from '../ui/toast.jsx'
 
-function normalizeName(s){ return String(s||'').trim().toLowerCase() }
+function normalizeName(s) { return String(s || '').trim().toLowerCase() }
 
-async function fetchAllFinishedGoods(limit=1000){
-  let from=0,to=limit-1,out=[]
-  for(let i=0;i<20;i++){
-    const { data, error } = await supabase
-      .from('finished_goods')
-      .select('id,name',{count:'exact'})
-      .eq('is_active',true)
-      .order('name',{ascending:true})
-      .range(from,to)
-    if(error) throw error
-    out.push(...(data||[]))
-    if(!data || data.length<limit) break
-    from+=limit; to+=limit
-  }
-  return out
-}
+async function getBinsForFgNames(names) {
+  if (!names.length) return {}
+  // OPTIMIZATION: Filter by names on server side
+  const { data: allBins, error } = await supabase
+    .from('v_bin_inventory')
+    .select('finished_good_name, bin_code, produced_at')
+    .in('finished_good_name', names)
 
-/**
- * New: server-side .in(...) with fallback to a large-range fetch.
- * Returns: { [normalizeName(finished_good_name)]: [{ bin_code, qty }, ...], ... }
- */
-async function getBinsForFgNames(names){
-  if(!names || !names.length) return {}
-
-  // Ensure unique names and use raw names for server-side .in()
-  const uniqueNames = Array.from(new Set(names.map(n => String(n || '').trim()).filter(Boolean)))
-  if(!uniqueNames.length) return {}
-
-  let allBins = null
-  let err = null
-
-  // 1) Preferred: ask server to return only rows for required finished_good_name values.
-  try {
-    const res = await supabase
-      .from('v_bin_inventory')
-      .select('finished_good_name, bin_code, produced_at')
-      .in('finished_good_name', uniqueNames)
-    allBins = res.data
-    err = res.error
-    console.debug('getBinsForFgNames: .in() returned', (allBins || []).length, 'rows for', uniqueNames.length, 'names')
-  } catch (e) {
-    console.warn('getBinsForFgNames: .in() failed', e)
-    allBins = null
-    err = e
-  }
-
-  // 2) Fallback: explicit large-range fetch to avoid silent truncation
-  if(!allBins || allBins.length === 0) {
-    console.debug('getBinsForFgNames: falling back to .range(0,50000)')
-    try {
-      const res2 = await supabase
-        .from('v_bin_inventory')
-        .select('finished_good_name, bin_code, produced_at')
-        .range(0, 50000) // adjust upper bound if you have more rows
-      allBins = res2.data
-      err = err || res2.error
-      console.debug('getBinsForFgNames: .range() returned', (allBins || []).length, 'rows')
-    } catch (e) {
-      console.warn('getBinsForFgNames: .range() failed', e)
-      allBins = allBins || []
-      err = err || e
-    }
-  }
-
-  if(err) console.warn('getBinsForFgNames: fetch error', err)
-  allBins = allBins || []
-
-  // Aggregate by normalized finished_good_name
-  const wanted = new Set(uniqueNames.map(normalizeName))
-  const bucket = {}
-  for(const r of allBins){
-    const raw = String(r.finished_good_name || '').trim()
-    if(!raw) continue
-    const key = normalizeName(raw)
-    if(!wanted.has(key)) continue
-    const bin = r.bin_code || '—'
-    bucket[key] = bucket[key] || {}
-    bucket[key][bin] = (bucket[key][bin] || 0) + 1
-  }
+  if (error) { console.error('v_bin_inventory', error); return {} }
 
   const out = {}
-  Object.entries(bucket).forEach(([k, bins])=>{
-    out[k] = Object.entries(bins).map(([bin_code, qty])=>({ bin_code, qty }))
+  const wanted = new Set(names.map(normalizeName))
+    ; (allBins || []).forEach(r => {
+      const fgKey = normalizeName(r.finished_good_name)
+      if (!wanted.has(fgKey)) return
+      if (!out[fgKey]) out[fgKey] = {}
+      const bin = r.bin_code || '—'
+      if (!out[fgKey][bin]) out[fgKey][bin] = { qty: 0 }
+      out[fgKey][bin].qty += 1
+    })
+  const agg = {}
+  Object.entries(out).forEach(([fgKey, bins]) => {
+    agg[fgKey] = Object.entries(bins).map(([bin_code, v]) => ({
+      bin_code, qty: v.qty
+    }))
   })
-
-  return out
+  return agg
 }
 
 function extractBrand(fgName) {
@@ -103,26 +45,27 @@ function extractBrand(fgName) {
   return (m && m[1]) ? String(m[1]).toUpperCase() : String(fgName).split(' ')[0].toUpperCase()
 }
 
-export default function SalesOrders(){
-  const [orders,setOrders]=useState([])
-  const [customers,setCustomers]=useState([])
-  const [fgIndex,setFgIndex]=useState(new Map())
+export default function SalesOrders() {
+  const { push } = useToast()
+  const [orders, setOrders] = useState([])
+  const [customers, setCustomers] = useState([])
+  // REMOVED: fgIndex state (we fetch on demand now)
 
-  const [customer,setCustomer]=useState('')
-  const [soNumber,setSoNumber]=useState('')
-  const [note,setNote]=useState('')
-  const [lines,setLines]=useState([{ finished_good_id:'', qty:'' }])
+  const [customer, setCustomer] = useState('')
+  const [soNumber, setSoNumber] = useState('')
+  const [note, setNote] = useState('')
+  const [lines, setLines] = useState([{ type: 'finished_good', finished_good_id: '', sku: '', qty: '' }])
 
-  const [impCustomer,setImpCustomer]=useState('')
-  const [impSoNumber,setImpSoNumber]=useState('')
-  const [impNote,setImpNote]=useState('')
-  const [importing,setImporting]=useState(false)
+  const [impCustomer, setImpCustomer] = useState('')
+  const [impSoNumber, setImpSoNumber] = useState('')
+  const [impNote, setImpNote] = useState('')
+  const [importing, setImporting] = useState(false)
 
-  const [q,setQ]=useState('')
-  const [loading,setLoading]=useState(true)
+  const [q, setQ] = useState('')
+  const [loading, setLoading] = useState(true)
   const [hideShipped, setHideShipped] = useState(true)
 
-  async function load(){
+  async function load() {
     setLoading(true)
     // pull from our new view
     const [{ data: list, error: err1 }, { data: cust, error: err2 }] = await Promise.all([
@@ -133,91 +76,208 @@ export default function SalesOrders(){
       supabase
         .from('customers')
         .select('id,name')
-        .eq('is_active',true)
+        .eq('is_active', true)
         .order('name')
     ])
-    if(err1) console.error(err1)
-    if(err2) console.error(err2)
-    setOrders(list||[])
-    setCustomers(cust||[])
+    if (err1) console.error(err1)
+    if (err2) console.error(err2)
+    setOrders(list || [])
+    setCustomers(cust || [])
     setLoading(false)
   }
 
-  async function buildFgIndex(){
-    try{
-      const fgs = await fetchAllFinishedGoods(1000)
-      setFgIndex(new Map(fgs.map(x=>[normalizeName(x.name), String(x.id)])))
-    }catch(e){ alert('Failed to load FG list: '+e.message) }
-  }
+  // REMOVED: buildFgIndex
 
-  useEffect(()=>{ load(); buildFgIndex() },[])
+  useEffect(() => { load() }, [])
 
-  useEffect(()=>{
+  useEffect(() => {
     const ch = supabase
       .channel('rt:sales')
-      .on('postgres_changes',{event:'*',schema:'public',table:'sales_orders'},()=>load())
-      .on('postgres_changes',{event:'*',schema:'public',table:'outward_allocations'},()=>load())
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'sales_orders' }, () => load())
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'outward_allocations' }, () => load())
       .subscribe()
-    return ()=>supabase.removeChannel(ch)
-  },[])
+    return () => supabase.removeChannel(ch)
+  }, [])
 
-  function addLine(){ setLines(ls=>[...ls,{finished_good_id:'',qty:''}]) }
-  function removeLine(i){ setLines(ls=>ls.filter((_,idx)=>idx!==i)) }
-  function updateLine(i,patch){ setLines(ls=>ls.map((l,idx)=>idx===i?{...l,...patch}:l)) }
+  function addLine() { setLines(ls => [...ls, { type: 'finished_good', finished_good_id: '', sku: '', qty: '' }]) }
+  function removeLine(i) { setLines(ls => ls.filter((_, idx) => idx !== i)) }
+  function updateLine(i, patch) { setLines(ls => ls.map((l, idx) => idx === i ? { ...l, ...patch } : l)) }
 
-  async function createSO(){
-    const payload = lines
-      .map(l=>({ finished_good_id:String(l.finished_good_id||'').trim(), qty:Number(l.qty) }))
-      .filter(l=>l.finished_good_id && Number.isFinite(l.qty) && l.qty>0)
+  async function createSO() {
+    if (!customer.trim()) return push('Pick a customer', 'warn')
 
-    if(!customer.trim()) return alert('Pick a customer')
-    if(payload.length===0) return alert('Add at least one item with qty>0')
+    // Separate FG and SKU lines
+    const fgLines = lines.filter(l => l.type === 'finished_good' && l.finished_good_id && Number(l.qty) > 0)
+    const skuLines = lines.filter(l => l.type === 'sku' && l.sku && Number(l.qty) > 0)
 
-    const { error } = await supabase.rpc('so_api_create', {
-      p_customer_name: customer.trim(),
-      p_lines: payload,
-      p_so_number: soNumber.trim() || null,
-      p_note: note.trim() || null   // works with our merged function
-    })
-    if(error) return alert(error.message)
+    if (fgLines.length === 0 && skuLines.length === 0) {
+      return push('Add at least one item with qty>0', 'warn')
+    }
 
-    setCustomer(''); setSoNumber(''); setNote('')
-    setLines([{finished_good_id:'',qty:''}])
-    load()
+    try {
+      // Expand SKUs
+      const qtyByFgId = {}
+
+      // Add FG lines directly
+      for (const line of fgLines) {
+        const fgId = String(line.finished_good_id).trim()
+        qtyByFgId[fgId] = (qtyByFgId[fgId] || 0) + Number(line.qty)
+      }
+
+      // Expand and add SKU lines
+      for (const line of skuLines) {
+        const { data: expanded, error } = await supabase.rpc('expand_sku', { p_sku: line.sku.trim() })
+        if (error) throw new Error(`Failed to expand SKU "${line.sku}": ${error.message}`)
+        if (!expanded || expanded.length === 0) {
+          throw new Error(`SKU "${line.sku}" not found or inactive`)
+        }
+
+        for (const item of expanded) {
+          const fgId = item.finished_good_id
+          const qtyToAdd = item.qty_per_sku * Number(line.qty)
+          qtyByFgId[fgId] = (qtyByFgId[fgId] || 0) + qtyToAdd
+        }
+      }
+
+      const payload = Object.entries(qtyByFgId).map(([fgId, qty]) => ({
+        finished_good_id: fgId,
+        qty: Math.floor(qty)
+      }))
+
+      const { error } = await supabase.rpc('so_api_create', {
+        p_customer_name: customer.trim(),
+        p_lines: payload,
+        p_so_number: soNumber.trim() || null,
+        p_note: note.trim() || null
+      })
+      if (error) throw error
+
+      setCustomer(''); setSoNumber(''); setNote('')
+      setLines([{ type: 'finished_good', finished_good_id: '', sku: '', qty: '' }])
+      push('Sales Order created!', 'ok')
+      load()
+    } catch (err) {
+      push(err.message, 'err')
+    }
   }
 
-  async function onImportOneSO(e){
-    const f=e.target.files?.[0]; if(!f) return
-    if(!impCustomer.trim()){ alert('Pick Customer first'); e.target.value=''; return }
+  async function onImportOneSO(e) {
+    const f = e.target.files?.[0]; if (!f) return
+    if (!impCustomer.trim()) { push('Pick Customer first', 'warn'); e.target.value = ''; return }
     setImporting(true)
-    try{
-      const buf=await f.arrayBuffer()
-      const wb=XLSX.read(buf,{type:'array'})
-      const ws=wb.Sheets[wb.SheetNames[0]]
-      const rows=XLSX.utils.sheet_to_json(ws,{defval:''})
-      if(rows.length===0) throw new Error('No rows found')
+    try {
+      const buf = await f.arrayBuffer()
+      const wb = XLSX.read(buf, { type: 'array' })
+      const ws = wb.Sheets[wb.SheetNames[0]]
+      const rows = XLSX.utils.sheet_to_json(ws, { defval: '' })
+      if (rows.length === 0) throw new Error('No rows found')
 
-      const merged={}
-      for(const r of rows){
-        const name=String(r['Finished Good']??r['finished good']??r['FG']??r['fg']??'').trim()
-        const qty=Number(r['Qty']??r['qty']??0)
-        if(!name || !(qty>0)) throw new Error('Need "Finished Good" and positive "Qty"')
-        const id=fgIndex.get(normalizeName(name)); if(!id) throw new Error(`FG not found: ${name}`)
-        merged[id]=(merged[id]||0)+qty
+      // 1. Extract all unique names/SKUs from rows
+      const uniqueNames = new Set()
+      const rowData = [] // Store parsed row data
+
+      for (const r of rows) {
+        const name = String(r['Finished Good'] ?? r['finished good'] ?? r['FG'] ?? r['fg'] ?? '').trim()
+        const qty = Number(r['Qty'] ?? r['qty'] ?? 0)
+        if (!name || !(qty > 0)) throw new Error('Need "Finished Good" and positive "Qty"')
+
+        uniqueNames.add(name)
+        rowData.push({ name, qty })
       }
-      const payload=Object.entries(merged).map(([id,qty])=>({finished_good_id:String(id),qty}))
+
+      // 2. Try to expand SKUs first
+      const { data: skuExpansions, error: skuErr } = await supabase.rpc('expand_sku', { p_sku: '' })
+      if (skuErr) console.warn('SKU expansion check failed:', skuErr)
+
+      // Get all SKU expansions for the unique names
+      const skuMap = {} // name -> [{finished_good_id, qty_per_sku}]
+      for (const name of uniqueNames) {
+        const { data: expanded, error } = await supabase.rpc('expand_sku', { p_sku: name })
+        if (!error && expanded && expanded.length > 0) {
+          skuMap[name] = expanded
+        }
+      }
+
+      // 3. Separate SKUs from direct FG names
+      const skuNames = new Set(Object.keys(skuMap))
+      const directFgNames = [...uniqueNames].filter(n => !skuNames.has(n))
+
+      // 4. Fetch direct FG names from finished_goods table
+      let fgMap = {} // normalizeName -> id
+      if (directFgNames.length > 0) {
+        const { data: foundFGs, error: fetchErr } = await supabase
+          .from('finished_goods')
+          .select('id,name')
+          .in('name', directFgNames)
+          .eq('is_active', true)
+
+        if (fetchErr) throw fetchErr
+
+        foundFGs?.forEach(fg => {
+          fgMap[normalizeName(fg.name)] = fg.id
+        })
+      }
+
+      // 5. Validate ALL items exist (all-or-nothing)
+      const missing = []
+      for (const name of uniqueNames) {
+        const isSku = skuNames.has(name)
+        const isFg = fgMap[normalizeName(name)]
+        if (!isSku && !isFg) {
+          missing.push(name)
+        }
+      }
+
+      if (missing.length > 0) {
+        throw new Error(`SKU/Finished Good not found: ${missing.slice(0, 5).join(', ')}${missing.length > 5 ? ` and ${missing.length - 5} more` : ''}`)
+      }
+
+      // 6. Build payload by expanding SKUs and aggregating by FG ID
+      const qtyByFgId = {} // fg_id -> total_qty
+
+      for (const row of rowData) {
+        if (skuNames.has(row.name)) {
+          // It's a SKU - expand it
+          const expanded = skuMap[row.name]
+          for (const item of expanded) {
+            const fgId = item.finished_good_id
+            const qtyToAdd = item.qty_per_sku * row.qty
+            qtyByFgId[fgId] = (qtyByFgId[fgId] || 0) + qtyToAdd
+          }
+        } else {
+          // It's a direct FG name
+          const fgId = fgMap[normalizeName(row.name)]
+          qtyByFgId[fgId] = (qtyByFgId[fgId] || 0) + row.qty
+        }
+      }
+
+      // 7. Create payload
+      const payload = Object.entries(qtyByFgId).map(([fgId, qty]) => ({
+        finished_good_id: String(fgId),
+        qty: Math.floor(qty)
+      }))
+
+      if (payload.length === 0) {
+        throw new Error('No valid items to create')
+      }
+
+      // 8. Create the sales order
       const { error } = await supabase.rpc('so_api_create', {
         p_customer_name: impCustomer.trim(),
         p_lines: payload,
         p_so_number: impSoNumber.trim() || null,
         p_note: impNote.trim() || null
       })
-      if(error) throw error
-      alert('SO created from file')
+      if (error) throw error
+
+      push('SO created from file', 'ok')
       setImpSoNumber(''); setImpNote(''); load()
-    }catch(err){ alert(err.message) }
-    finally{ setImporting(false); e.target.value='' }
+    } catch (err) {
+      push(err.message, 'err')
+    }
+    finally { setImporting(false); e.target.value = '' }
   }
+
 
   function downloadSampleCSV() {
     const headers = ['Finished Good', 'Qty']
@@ -226,35 +286,35 @@ export default function SalesOrders(){
     saveAs(blob, 'sales_order_sample.csv')
   }
 
-  const filtered = useMemo(()=>{
-    const s=q.trim().toLowerCase()
-    return (orders||[]).filter(o =>
+  const filtered = useMemo(() => {
+    const s = q.trim().toLowerCase()
+    return (orders || []).filter(o =>
       (hideShipped ? o.status !== 'Cleared' : true) &&  // our view uses Pending/Partial/Cleared
       (
         !s ||
-        String(o.so_number||'').toLowerCase().includes(s) ||
-        String(o.customer_name||'').toLowerCase().includes(s)
+        String(o.so_number || '').toLowerCase().includes(s) ||
+        String(o.customer_name || '').toLowerCase().includes(s)
       )
     )
-  },[orders,q,hideShipped])
+  }, [orders, q, hideShipped])
 
-  function exportOrders(){
-    downloadCSV('sales_orders.csv', filtered.map(o=>({
-      id:o.id,
-      so_number:o.so_number,
-      customer:o.customer_name,
-      status:o.status,
-      shipped:o.qty_shipped_total,
-      ordered:o.qty_ordered_total,
-      note:o.note,
-      created_at:o.created_at || ''
+  function exportOrders() {
+    downloadCSV('sales_orders.csv', filtered.map(o => ({
+      id: o.id,
+      so_number: o.so_number,
+      customer: o.customer_name,
+      status: o.status,
+      shipped: o.qty_shipped_total,
+      ordered: o.qty_ordered_total,
+      note: o.note,
+      created_at: o.created_at || ''
     })))
   }
 
   // ---- PRINT: grouped-by-brand, denser (~50 rows/page), darker borders, qty left-aligned,
   //          and FINISHED GOODS sorted alphabetically within each brand ----
   async function printSO(order, { onlyPending = true } = {}) {
-    try{
+    try {
       const [{ default: jsPDF }, { default: autoTable }] = await Promise.all([
         import('jspdf'),
         import('jspdf-autotable')
@@ -282,7 +342,7 @@ export default function SalesOrders(){
         doc.text(splitNote, leftMargin, currentY)
         currentY += splitNote.length * 10
       }
-      if(order.created_at){
+      if (order.created_at) {
         doc.setFontSize(10)
         doc.text(`Created: ${new Date(order.created_at).toLocaleString()}`, leftMargin, currentY)
         currentY += 12
@@ -293,11 +353,11 @@ export default function SalesOrders(){
         .from('v_so_lines')
         .select('*')
         .eq('sales_order_id', order.id)
-      let rows = (lines||[])
+      let rows = (lines || [])
       if (onlyPending) rows = rows.filter(l => Number(l.qty_shipped || 0) < Number(l.qty_ordered || 0))
-      if (!rows.length) { alert('No lines to print'); return }
+      if (!rows.length) { push('No lines to print', 'warn'); return }
 
-      const fgNames = rows.map(l=>l.finished_good_name).filter(Boolean)
+      const fgNames = rows.map(l => l.finished_good_name).filter(Boolean)
       const binsByFg = await getBinsForFgNames(fgNames)
 
       // group by brand
@@ -307,7 +367,7 @@ export default function SalesOrders(){
         if (!byBrand[brand]) byBrand[brand] = []
         byBrand[brand].push(l)
       }
-      const brands = Object.keys(byBrand).sort((a,b)=>a.localeCompare(b))
+      const brands = Object.keys(byBrand).sort((a, b) => a.localeCompare(b))
 
       // tuned column widths: finished good reduced, qty narrow, bins increased
       const col1 = 44                              // ordered (narrow)
@@ -327,11 +387,11 @@ export default function SalesOrders(){
           return A.localeCompare(B)
         })
 
-        const body = items.map(l=>{
+        const body = items.map(l => {
           const fgName = l.finished_good_name || ''
           const bins = binsByFg[normalizeName(fgName)] || []
           const binsText = bins.length ? bins.map(b => `${b.bin_code}: ${b.qty}`).join(', ') : '—'
-          return [fgName, String(Number(l.qty_ordered||0)), binsText]
+          return [fgName, String(Number(l.qty_ordered || 0)), binsText]
         })
 
         autoTable(doc, {
@@ -345,9 +405,9 @@ export default function SalesOrders(){
             overflow: 'ellipsize',
             valign: 'middle',
             lineWidth: 0.6,      // darker/thicker border
-            lineColor: [110,110,110] // darker gray border
+            lineColor: [110, 110, 110] // darker gray border
           },
-          headStyles: { fillColor: [250,250,250], textColor: 20, fontStyle: 'bold', halign: 'left', fontSize:9 },
+          headStyles: { fillColor: [250, 250, 250], textColor: 20, fontStyle: 'bold', halign: 'left', fontSize: 9 },
           columnStyles: {
             0: { cellWidth: col0, overflow: 'ellipsize' },         // finished good (reduced)
             1: { halign: 'left', cellWidth: col1 },                // ordered now LEFT aligned
@@ -387,11 +447,11 @@ export default function SalesOrders(){
       document.body.appendChild(iframe)
       iframe.onload = function () {
         try { iframe.contentWindow.focus(); iframe.contentWindow.print() }
-        catch(e){ doc.save(`SO_${order.so_number || order.id}.pdf`) }
+        catch (e) { doc.save(`SO_${order.so_number || order.id}.pdf`) }
         // leave iframe in DOM so user closes print dialog manually
       }
-    }catch(err){
-      alert('Failed to print: ' + (err?.message || String(err)))
+    } catch (err) {
+      push('Failed to print: ' + (err?.message || String(err)), 'err')
     }
   }
 
@@ -401,10 +461,10 @@ export default function SalesOrders(){
       <div className="card">
         <div className="hd"><b>Import ONE Sales Order</b></div>
         <div className="bd">
-          <div className="row" style={{gap:8, flexWrap:'wrap'}}>
-            <select value={impCustomer} onChange={e=>setImpCustomer(e.target.value)}>
+          <div className="row" style={{ gap: 8, flexWrap: 'wrap' }}>
+            <select value={impCustomer} onChange={e => setImpCustomer(e.target.value)}>
               <option value="">Select Customer</option>
-              {customers.map(c=><option key={c.id} value={c.name}>{c.name}</option>)}
+              {customers.map(c => <option key={c.id} value={c.name}>{c.name}</option>)}
             </select>
             <input
               placeholder="SO Number (auto-generated)"
@@ -415,13 +475,13 @@ export default function SalesOrders(){
             <input
               placeholder="Add note (optional)"
               value={impNote}
-              onChange={e=>setImpNote(e.target.value)}
-              style={{width:220}}
+              onChange={e => setImpNote(e.target.value)}
+              style={{ width: 220 }}
             />
-            <input type="file" accept=".xlsx,.xls,.csv" onChange={onImportOneSO} disabled={importing}/>
+            <input type="file" accept=".xlsx,.xls,.csv" onChange={onImportOneSO} disabled={importing} />
             <button className="btn ghost" onClick={downloadSampleCSV}>📄 Download Sample CSV</button>
           </div>
-          <div className="s" style={{color:'var(--muted)'}}>
+          <div className="s" style={{ color: 'var(--muted)' }}>
             Columns required: <code>Finished Good</code>, <code>Qty</code>.
           </div>
         </div>
@@ -430,11 +490,11 @@ export default function SalesOrders(){
       {/* Manual create */}
       <div className="card">
         <div className="hd"><b>Create Sales Order (Manual)</b></div>
-        <div className="bd" style={{display:'grid', gap:10}}>
-          <div className="row" style={{gap:8}}>
-            <select value={customer} onChange={e=>setCustomer(e.target.value)} style={{minWidth:260}}>
+        <div className="bd" style={{ display: 'grid', gap: 10 }}>
+          <div className="row" style={{ gap: 8 }}>
+            <select value={customer} onChange={e => setCustomer(e.target.value)} style={{ minWidth: 260 }}>
               <option value="">Select Customer</option>
-              {customers.map(c=><option key={c.id} value={c.name}>{c.name}</option>)}
+              {customers.map(c => <option key={c.id} value={c.name}>{c.name}</option>)}
             </select>
             <input
               placeholder="SO Number (auto-generated)"
@@ -447,32 +507,50 @@ export default function SalesOrders(){
           <textarea
             placeholder="Add note (optional)"
             value={note}
-            onChange={e=>setNote(e.target.value)}
-            style={{width:'100%', minHeight:60}}
+            onChange={e => setNote(e.target.value)}
+            style={{ width: '100%', minHeight: 60 }}
           />
 
           <table className="table">
-            <thead><tr><th style={{width:'50%'}}>Finished Good</th><th style={{width:120}}>Qty</th><th></th></tr></thead>
+            <thead><tr><th style={{ width: 100 }}>Type</th><th style={{ width: '45%' }}>Finished Good / SKU</th><th style={{ width: 120 }}>Qty</th><th></th></tr></thead>
             <tbody>
-              {lines.map((l,idx)=>(
+              {lines.map((l, idx) => (
                 <tr key={idx}>
                   <td>
-                    <AsyncFGSelect
-                      value={l.finished_good_id}
-                      onChange={(id)=>updateLine(idx,{finished_good_id:String(id||'')})}
-                      placeholder="Search finished goods…"
-                      minChars={1}
-                      pageSize={25}
-                    />
+                    <select
+                      value={l.type}
+                      onChange={e => updateLine(idx, { type: e.target.value, finished_good_id: '', sku: '' })}
+                    >
+                      <option value="finished_good">FG</option>
+                      <option value="sku">SKU</option>
+                    </select>
                   </td>
-                  <td><input type="number" min="1" value={l.qty} onChange={e=>updateLine(idx,{qty:e.target.value})}/></td>
-                  <td><button className="btn ghost" onClick={()=>removeLine(idx)}>✕</button></td>
+                  <td>
+                    {l.type === 'finished_good' ? (
+                      <AsyncFGSelect
+                        value={l.finished_good_id}
+                        onChange={(id) => updateLine(idx, { finished_good_id: String(id || '') })}
+                        placeholder="Search finished goods…"
+                        minChars={1}
+                        pageSize={25}
+                      />
+                    ) : (
+                      <input
+                        type="text"
+                        placeholder="Enter SKU code"
+                        value={l.sku}
+                        onChange={e => updateLine(idx, { sku: e.target.value })}
+                      />
+                    )}
+                  </td>
+                  <td><input type="number" min="1" value={l.qty} onChange={e => updateLine(idx, { qty: e.target.value })} /></td>
+                  <td><button className="btn ghost" onClick={() => removeLine(idx)}>✕</button></td>
                 </tr>
               ))}
             </tbody>
           </table>
 
-          <div className="row" style={{marginTop:4}}>
+          <div className="row" style={{ marginTop: 4 }}>
             <button className="btn outline" onClick={addLine}>+ Add Line</button>
             <button className="btn" onClick={createSO}>Create Order</button>
           </div>
@@ -484,12 +562,12 @@ export default function SalesOrders(){
         <div className="hd">
           <b>Orders</b>
           <div className="row">
-            <input placeholder="Search SO / Customer…" value={q} onChange={e=>setQ(e.target.value)} />
-            <label className="row" style={{gap:6, marginLeft:8}}>
+            <input placeholder="Search SO / Customer…" value={q} onChange={e => setQ(e.target.value)} />
+            <label className="row" style={{ gap: 6, marginLeft: 8 }}>
               <input
                 type="checkbox"
                 checked={hideShipped}
-                onChange={e=>setHideShipped(e.target.checked)}
+                onChange={e => setHideShipped(e.target.checked)}
                 title="Hide fully shipped orders"
               />
               Hide shipped
@@ -498,37 +576,144 @@ export default function SalesOrders(){
             <Link to="/outward" className="btn outline">Open Outward</Link>
           </div>
         </div>
-        <div className="bd" style={{overflow:'auto'}}>
+        <div className="bd" style={{ overflow: 'auto' }}>
           <table className="table">
             <thead>
               <tr>
                 <th>SO</th><th>Customer</th><th>Status</th>
-                <th style={{textAlign:'right'}}>Shipped / Ordered</th>
+                <th style={{ textAlign: 'right' }}>Shipped / Ordered</th>
                 <th>Note</th>
                 <th>Created</th>
                 <th>Actions</th>
               </tr>
             </thead>
             <tbody>
-              {filtered.map(o=>(
+              {filtered.map(o => (
                 <tr key={o.id}>
                   <td><Link to={`/outward?so=${o.id}`}>{o.so_number || o.id}</Link></td>
                   <td>{o.customer_name}</td>
                   <td><span className="badge">{o.status}</span></td>
-                  <td style={{textAlign:'right'}}>{o.qty_shipped_total} / {o.qty_ordered_total}</td>
-                  <td style={{maxWidth:180, overflow:'hidden', textOverflow:'ellipsis', whiteSpace:'nowrap'}}>{o.note || ''}</td>
+                  <td style={{ textAlign: 'right' }}>{o.qty_shipped_total} / {o.qty_ordered_total}</td>
+                  <td style={{ maxWidth: 180, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{o.note || ''}</td>
                   <td>{o.created_at ? new Date(o.created_at).toLocaleString() : '—'}</td>
                   <td>
-                    <button className="btn outline" onClick={()=>printSO(o)}>Print</button>
+                    <button className="btn outline" onClick={() => printSO(o)}>Print</button>
                   </td>
                 </tr>
               ))}
-              {filtered.length===0 && (
-                <tr><td colSpan="7" style={{color:'var(--muted)'}}>{loading ? 'Loading…' : 'No orders'}</td></tr>
+              {filtered.length === 0 && (
+                <tr><td colSpan="7" style={{ color: 'var(--muted)' }}>{loading ? 'Loading…' : 'No orders'}</td></tr>
               )}
             </tbody>
           </table>
         </div>
+      </div>
+      <PendingItemsSummary />
+    </div>
+  )
+}
+
+function PendingItemsSummary() {
+  const [items, setItems] = useState([])
+  const [loading, setLoading] = useState(true)
+
+  async function load() {
+    try {
+      // 1. Get tracked items
+      const { data: tracked, error: err1 } = await supabase
+        .from('finished_goods')
+        .select('id,name')
+        .eq('is_tracked_for_pending', true)
+        .eq('is_active', true)
+
+      if (err1) throw err1
+      if (!tracked || tracked.length === 0) {
+        setItems([])
+        setLoading(false)
+        return
+      }
+
+      // 2. Get pending SO IDs (cleared_at IS NULL)
+      const { data: pendingSOs, error: err2 } = await supabase
+        .from('sales_orders')
+        .select('id')
+        .is('cleared_at', null)
+
+      if (err2) throw err2
+      const pendingIds = (pendingSOs || []).map(x => x.id)
+
+      if (pendingIds.length === 0) {
+        setItems([])
+        setLoading(false)
+        return
+      }
+
+      // 3. Get lines for these items in pending orders
+      // We use v_so_lines which has qty_ordered and qty_shipped
+      const { data: lines, error: err3 } = await supabase
+        .from('v_so_lines')
+        .select('finished_good_id, qty_ordered, qty_shipped')
+        .in('finished_good_id', tracked.map(t => t.id))
+        .in('sales_order_id', pendingIds)
+
+      if (err3) throw err3
+
+      // 4. Aggregate
+      const agg = tracked.map(t => {
+        const myLines = (lines || []).filter(l => l.finished_good_id === t.id)
+        const totalOrdered = myLines.reduce((sum, l) => sum + (Number(l.qty_ordered) || 0), 0)
+        const totalShipped = myLines.reduce((sum, l) => sum + (Number(l.qty_shipped) || 0), 0)
+        const pending = Math.max(0, totalOrdered - totalShipped)
+        return { name: t.name, pending }
+      }).filter(x => x.pending > 0)
+
+      setItems(agg)
+    } catch (err) {
+      console.error('PendingItemsSummary error:', err)
+    } finally {
+      setLoading(false)
+    }
+  }
+
+  useEffect(() => {
+    load()
+    const ch = supabase
+      .channel('rt:pending_summary')
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'sales_orders' }, () => load())
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'sales_order_lines' }, () => load())
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'outward_allocations' }, () => load())
+      .subscribe()
+    return () => supabase.removeChannel(ch)
+  }, [])
+
+  // Always render
+  return (
+    <div className="card">
+      <div className="hd">
+        <b>Pending Items Summary</b>
+        <button className="btn small ghost" onClick={load} disabled={loading}>
+          {loading ? 'Refreshing...' : 'Refresh'}
+        </button>
+      </div>
+      <div className="bd" style={{ padding: 0 }}>
+        <table className="table">
+          <thead>
+            <tr>
+              <th>Finished Good</th>
+              <th style={{ textAlign: 'right', width: 120 }}>Pending Qty</th>
+            </tr>
+          </thead>
+          <tbody>
+            {loading && <tr><td colSpan="2" className="s">Loading...</td></tr>}
+            {!loading && items.length === 0 && <tr><td colSpan="2" className="s">No pending tracked items</td></tr>}
+            {!loading && items.map(item => (
+              <tr key={item.name}>
+                <td>{item.name}</td>
+                <td style={{ textAlign: 'right', fontWeight: 600 }}>{item.pending}</td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
       </div>
     </div>
   )
