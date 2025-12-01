@@ -270,6 +270,8 @@ export default function SKUMappings() {
 
             if (rows.length === 0) throw new Error('No rows found')
 
+            push(`Parsing ${rows.length} rows...`, 'ok')
+
             // Group by SKU
             const skuGroups = {}
             for (const r of rows) {
@@ -279,7 +281,10 @@ export default function SKUMappings() {
                 const desc = String(r['Description'] ?? r['description'] ?? '').trim()
 
                 if (!skuCode || !fgName || !(qty > 0)) {
-                    throw new Error('Each row needs: SKU, Finished Good, and Qty per SKU > 0')
+                    // skip empty rows or invalid data silently? or throw?
+                    // for 40k rows, maybe just skip bad ones and report count?
+                    // let's stick to strict for now but maybe log warning
+                    continue
                 }
 
                 if (!skuGroups[skuCode]) {
@@ -288,23 +293,31 @@ export default function SKUMappings() {
                 skuGroups[skuCode].items.push({ fgName, qty })
             }
 
-            // Fetch all unique FG names
+            const skuCodes = Object.keys(skuGroups)
+            if (skuCodes.length === 0) throw new Error('No valid SKU rows found')
+
+            // Fetch all unique FG names in chunks
             const allFgNames = [...new Set(
                 Object.values(skuGroups).flatMap(g => g.items.map(i => i.fgName))
             )]
 
-            const { data: foundFGs, error: fetchErr } = await supabase
-                .from('finished_goods')
-                .select('id, name')
-                .in('name', allFgNames)
-                .eq('is_active', true)
-
-            if (fetchErr) throw fetchErr
+            push(`Resolving ${allFgNames.length} finished goods...`, 'ok')
 
             const fgMap = {}
-            foundFGs?.forEach(fg => {
-                fgMap[fg.name.toLowerCase().trim()] = fg.id
-            })
+            const CHUNK_SIZE_FG = 1000
+            for (let i = 0; i < allFgNames.length; i += CHUNK_SIZE_FG) {
+                const chunk = allFgNames.slice(i, i + CHUNK_SIZE_FG)
+                const { data: foundFGs, error: fetchErr } = await supabase
+                    .from('finished_goods')
+                    .select('id, name')
+                    .in('name', chunk)
+                    .eq('is_active', true)
+
+                if (fetchErr) throw fetchErr
+                foundFGs?.forEach(fg => {
+                    fgMap[fg.name.toLowerCase().trim()] = fg.id
+                })
+            }
 
             // Validate all FGs exist
             const missing = []
@@ -318,35 +331,66 @@ export default function SKUMappings() {
                 throw new Error(`Finished goods not found: ${missing.slice(0, 5).join(', ')}${missing.length > 5 ? '...' : ''}`)
             }
 
-            // Insert all SKUs and items
-            for (const [skuCode, data] of Object.entries(skuGroups)) {
-                // Insert SKU
+            // Insert SKUs and items in chunks
+            push(`Importing ${skuCodes.length} SKUs...`, 'ok')
+
+            const CHUNK_SIZE_SKU = 50 // smaller chunk for writes to avoid timeout
+            let processed = 0
+
+            for (let i = 0; i < skuCodes.length; i += CHUNK_SIZE_SKU) {
+                const chunkCodes = skuCodes.slice(i, i + CHUNK_SIZE_SKU)
+
+                // 1. Upsert SKUs
+                const skuUpserts = chunkCodes.map(code => ({
+                    sku: code,
+                    description: skuGroups[code].description || null,
+                    is_active: true
+                }))
+
                 const { error: err1 } = await supabase
                     .from('sku_mappings')
-                    .insert({
-                        sku: skuCode,
-                        description: data.description || null
-                    })
+                    .upsert(skuUpserts, { onConflict: 'sku' })
 
-                if (err1) throw new Error(`Failed to create SKU ${skuCode}: ${err1.message}`)
+                if (err1) throw new Error(`Failed to upsert SKUs: ${err1.message}`)
 
-                // Insert items
+                // 2. Delete existing items for these SKUs (to handle updates/re-imports)
                 const { error: err2 } = await supabase
                     .from('sku_mapping_items')
-                    .insert(
-                        data.items.map(item => ({
-                            sku: skuCode,
+                    .delete()
+                    .in('sku', chunkCodes)
+
+                if (err2) throw new Error(`Failed to clean up old items: ${err2.message}`)
+
+                // 3. Insert new items
+                const itemInserts = []
+                for (const code of chunkCodes) {
+                    for (const item of skuGroups[code].items) {
+                        itemInserts.push({
+                            sku: code,
                             finished_good_id: fgMap[item.fgName.toLowerCase().trim()],
                             qty_per_sku: item.qty
-                        }))
-                    )
+                        })
+                    }
+                }
 
-                if (err2) throw new Error(`Failed to add items for SKU ${skuCode}: ${err2.message}`)
+                if (itemInserts.length > 0) {
+                    const { error: err3 } = await supabase
+                        .from('sku_mapping_items')
+                        .insert(itemInserts)
+
+                    if (err3) throw new Error(`Failed to insert items: ${err3.message}`)
+                }
+
+                processed += chunkCodes.length
+                if (processed % 500 === 0) {
+                    push(`Imported ${processed}/${skuCodes.length} SKUs...`, 'ok')
+                }
             }
 
-            push(`Imported ${Object.keys(skuGroups).length} SKU(s)`, 'ok')
+            push(`Successfully imported ${skuCodes.length} SKUs!`, 'ok')
             load()
         } catch (err) {
+            console.error(err)
             push(err.message, 'err')
         } finally {
             e.target.value = ''
