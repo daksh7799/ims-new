@@ -185,43 +185,58 @@ export default function SalesOrders() {
         rowData.push({ name, qty })
       }
 
-      // 2. Try to expand SKUs first
-      const { data: skuExpansions, error: skuErr } = await supabase.rpc('expand_sku', { p_sku: '' })
-      if (skuErr) console.warn('SKU expansion check failed:', skuErr)
-
-      // Get all SKU expansions for the unique names
+      // 2. Bulk resolve SKUs and FGs
+      const uniqueNamesList = [...uniqueNames]
       const skuMap = {} // name -> [{finished_good_id, qty_per_sku}]
-      for (const name of uniqueNames) {
-        const { data: expanded, error } = await supabase.rpc('expand_sku', { p_sku: name })
-        if (!error && expanded && expanded.length > 0) {
-          skuMap[name] = expanded
-        }
-      }
+      const foundSkuNames = new Set()
 
-      // 3. Separate SKUs from direct FG names
-      const skuNames = new Set(Object.keys(skuMap))
-      const directFgNames = [...uniqueNames].filter(n => !skuNames.has(n))
+      // A. Bulk fetch SKUs in chunks
+      const CHUNK_SIZE = 100
+      for (let i = 0; i < uniqueNamesList.length; i += CHUNK_SIZE) {
+        const chunk = uniqueNamesList.slice(i, i + CHUNK_SIZE)
 
-      // 4. Fetch direct FG names from finished_goods table
-      let fgMap = {} // normalizeName -> id
-      if (directFgNames.length > 0) {
-        const { data: foundFGs, error: fetchErr } = await supabase
-          .from('finished_goods')
-          .select('id,name')
-          .in('name', directFgNames)
-          .eq('is_active', true)
+        const { data: skuItems, error: skuErr } = await supabase
+          .from('sku_mapping_items')
+          .select('sku, finished_good_id, qty_per_sku, sku_mappings!inner(is_active)')
+          .in('sku', chunk)
+          .eq('sku_mappings.is_active', true)
 
-        if (fetchErr) throw fetchErr
+        if (skuErr) throw skuErr
 
-        foundFGs?.forEach(fg => {
-          fgMap[normalizeName(fg.name)] = fg.id
+        skuItems?.forEach(item => {
+          if (!skuMap[item.sku]) skuMap[item.sku] = []
+          skuMap[item.sku].push(item)
+          foundSkuNames.add(item.sku)
         })
       }
 
-      // 5. Validate ALL items exist (all-or-nothing)
+      // B. Identify remaining names (potential direct FGs)
+      const potentialFgNames = uniqueNamesList.filter(n => !foundSkuNames.has(n))
+      const fgMap = {} // normalizeName -> id
+
+      // C. Bulk fetch FGs in chunks
+      if (potentialFgNames.length > 0) {
+        for (let i = 0; i < potentialFgNames.length; i += CHUNK_SIZE) {
+          const chunk = potentialFgNames.slice(i, i + CHUNK_SIZE)
+
+          const { data: foundFGs, error: fetchErr } = await supabase
+            .from('finished_goods')
+            .select('id, name')
+            .in('name', chunk)
+            .eq('is_active', true)
+
+          if (fetchErr) throw fetchErr
+
+          foundFGs?.forEach(fg => {
+            fgMap[normalizeName(fg.name)] = fg.id
+          })
+        }
+      }
+
+      // 3. Validate ALL items exist (all-or-nothing)
       const missing = []
       for (const name of uniqueNames) {
-        const isSku = skuNames.has(name)
+        const isSku = foundSkuNames.has(name)
         const isFg = fgMap[normalizeName(name)]
         if (!isSku && !isFg) {
           missing.push(name)
@@ -232,11 +247,11 @@ export default function SalesOrders() {
         throw new Error(`SKU/Finished Good not found: ${missing.slice(0, 5).join(', ')}${missing.length > 5 ? ` and ${missing.length - 5} more` : ''}`)
       }
 
-      // 6. Build payload by expanding SKUs and aggregating by FG ID
+      // 4. Build payload by expanding SKUs and aggregating by FG ID
       const qtyByFgId = {} // fg_id -> total_qty
 
       for (const row of rowData) {
-        if (skuNames.has(row.name)) {
+        if (foundSkuNames.has(row.name)) {
           // It's a SKU - expand it
           const expanded = skuMap[row.name]
           for (const item of expanded) {
