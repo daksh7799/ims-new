@@ -129,6 +129,8 @@ export default function ManufacturePage() {
 
       if (allCreated.length > 0) {
         push(`Successfully created ${allCreated.length} packets across ${batches.length} batch(es)!`, "ok");
+        // Reset to single empty line
+        setManufacturingLines([{ id: Date.now(), fgId: "", fgName: "", qty: 1 }]);
       } else {
         push("No packets were created", "warn");
       }
@@ -290,17 +292,7 @@ export default function ManufacturePage() {
       // 1. Extract unique names from rows
       const uniqueNames = [...new Set(rows.map(r => r.name))];
 
-      // 2. Fetch ONLY the FGs that match these names (case-insensitive if possible, but ILIKE ANY is hard)
-      // For simplicity and performance, we'll fetch matching names. 
-      // Since we can't easily do "ILIKE ANY" with Supabase JS client efficiently for many items,
-      // we might have to fetch exact matches or rely on the user having correct names.
-      // However, to be robust, let's try to fetch by names.
-      // NOTE: Supabase .in() is case-sensitive. 
-      // If we want case-insensitive, we might need a text search or just fetch all if list is small?
-      // But we promised optimization. 
-      // Let's assume names are mostly correct or we fetch a superset if possible.
-      // Actually, let's use the 'in' filter. If it misses due to case, we warn.
-
+      // 2. Fetch ONLY the FGs that match these names
       const { data: foundFGs, error: fetchErr } = await supabase
         .from("finished_goods")
         .select("id,name")
@@ -328,7 +320,10 @@ export default function ManufacturePage() {
 
       const entries = Object.entries(grouped);
       const missing = [];
+      const batchIds = []; // Collect batch IDs for bulk packet fetch
+      const batchToName = {}; // Map batch_id to display name
 
+      // Create all batches first
       for (const [normKey, val] of entries) {
         const fgUUID = idx[normKey];
         if (!fgUUID) {
@@ -357,24 +352,30 @@ export default function ManufacturePage() {
           continue;
         }
 
-        // fetch created packets for this batch
-        const { data: ps, error: e2 } = await supabase
+        batchIds.push(batchId);
+        batchToName[batchId] = val.name;
+      }
+
+      // Bulk fetch all packets for all batches in one query
+      if (batchIds.length > 0) {
+        const { data: allPackets, error: e2 } = await supabase
           .from("packets")
-          .select("packet_code")
-          .eq("batch_id", batchId)
+          .select("packet_code,batch_id")
+          .in("batch_id", batchIds)
+          .order("batch_id")
           .order("id");
 
         if (e2) {
-          console.error("Fetch packets failed for", val.name, e2);
-          continue;
-        }
-
-        (ps || []).forEach((p) => {
-          allCreated.push({
-            code: p.packet_code,
-            name: val.name, // keep sheet's capitalization
+          console.error("Fetch packets failed", e2);
+          push("Failed to fetch created packets", "err");
+        } else {
+          (allPackets || []).forEach((p) => {
+            allCreated.push({
+              code: p.packet_code,
+              name: batchToName[p.batch_id] || "",
+            });
           });
-        });
+        }
       }
 
       if (missing.length > 0) {
@@ -390,6 +391,8 @@ export default function ManufacturePage() {
 
       if (allCreated.length > 0) {
         push(`Bulk manufacturing complete — ${allCreated.length} packets created.`, "ok");
+        // Clear the upload preview after successful creation
+        setRows([]);
       }
     } catch (err) {
       console.error("Bulk run failed:", err);
