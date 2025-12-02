@@ -28,8 +28,10 @@ export default function LiveBarcodes() {
   const [toDate, setToDate] = useState("");
   const [selected, setSelected] = useState(() => new Set());
 
-  // Sort direction for Returned column
+  // Sort directions for both columns
   const [returnedSortDir, setReturnedSortDir] = useState("desc"); // asc / desc
+  const [producedSortDir, setProducedSortDir] = useState("desc"); // asc / desc - newest first by default
+  const [activeSort, setActiveSort] = useState("produced"); // "produced" or "returned"
 
   const navigate = useNavigate();
 
@@ -50,7 +52,6 @@ export default function LiveBarcodes() {
         query = query.eq("status", "returned").eq("is_no_barcode_return", true);
       } else {
         // "all" -> usually implies available + returned, based on original code
-        // Original code: .in("status", ["available", "returned"])
         query = query.in("status", ["available", "returned"]);
       }
 
@@ -70,8 +71,11 @@ export default function LiveBarcodes() {
       }
 
       // 4. Sorting
-      query = query.order("returned_at", { ascending: returnedSortDir === "asc", nullsFirst: false });
-      query = query.order("produced_at", { ascending: false });
+      if (activeSort === "returned") {
+        query = query.order("returned_at", { ascending: returnedSortDir === "asc", nullsFirst: false });
+      } else {
+        query = query.order("produced_at", { ascending: producedSortDir === "asc", nullsFirst: false });
+      }
 
       // 5. Pagination
       const from = (page - 1) * PAGE_SIZE;
@@ -99,21 +103,21 @@ export default function LiveBarcodes() {
   useEffect(() => {
     setPage(1); // Reset to page 1 when filters change
     load(true); // Include count
-  }, [q, statusFilter, fromDate, toDate, returnedSortDir]);
+  }, [q, statusFilter, fromDate, toDate, returnedSortDir, producedSortDir, activeSort]);
 
   // Load without count when only page changes
   useEffect(() => {
     load(false); // Skip count for faster pagination
   }, [page]);
 
-  // Realtime subscriptions
+  // Realtime subscriptions - FIXED: preserve page position
   useEffect(() => {
     const c1 = supabase
       .channel("rt:packets_live")
       .on(
         "postgres_changes",
         { event: "*", schema: "public", table: "packets" },
-        () => load(true)
+        () => load(false) // Changed from load(true) to preserve page position
       )
       .subscribe();
 
@@ -122,7 +126,7 @@ export default function LiveBarcodes() {
       .on(
         "postgres_changes",
         { event: "*", schema: "public", table: "stock_ledger" },
-        () => load(true)
+        () => load(false) // Changed from load(true) to preserve page position
       )
       .subscribe();
 
@@ -161,6 +165,9 @@ export default function LiveBarcodes() {
     setToDate("");
     setStatusFilter("all");
     setPage(1);
+    // Reset sort to default
+    setActiveSort("produced");
+    setProducedSortDir("desc");
   }
 
   /** -------------------- EXPORT / PRINT -------------------- **/
@@ -211,13 +218,9 @@ export default function LiveBarcodes() {
     // With server-side pagination, we only have `rows`.
     // If the user selects items, goes to next page, selects more, then downloads...
     // We need to fetch the details for ALL selected items.
+    // Better approach: Fetch details for all selected codes.
 
     if (!selected.size) return push("Select barcodes first", "warn");
-
-    // We can pass the codes to the labels page, and let it fetch? 
-    // Or we fetch here. The Labels page expects { codes, namesByCode }.
-    // Let's fetch the missing details if needed, or just pass what we have if we assume selection is mostly from current view.
-    // Better approach: Fetch details for all selected codes.
 
     (async () => {
       const codes = Array.from(selected);
@@ -260,12 +263,19 @@ export default function LiveBarcodes() {
     })();
   }
 
-  /** -------------------- SORT HANDLER FOR RETURNED -------------------- **/
+  /** -------------------- SORT HANDLERS -------------------- **/
   function toggleReturnedSort() {
+    if (activeSort !== "returned") setActiveSort("returned");
     setReturnedSortDir((dir) => (dir === "asc" ? "desc" : "asc"));
   }
 
-  const returnedArrow = returnedSortDir === "asc" ? "↑" : "↓";
+  function toggleProducedSort() {
+    if (activeSort !== "produced") setActiveSort("produced");
+    setProducedSortDir((dir) => (dir === "asc" ? "desc" : "asc"));
+  }
+
+  const returnedArrow = activeSort === "returned" ? (returnedSortDir === "asc" ? "↑" : "↓") : "↕";
+  const producedArrow = activeSort === "produced" ? (producedSortDir === "asc" ? "↑" : "↓") : "↕";
   const totalPages = Math.max(1, Math.ceil(totalCount / PAGE_SIZE));
 
   return (
@@ -360,7 +370,14 @@ export default function LiveBarcodes() {
                 >
                   Returned {returnedArrow}
                 </th>
-                <th>Produced</th>
+                {/* Clickable Produced header with arrow */}
+                <th
+                  onClick={toggleProducedSort}
+                  style={{ cursor: "pointer", whiteSpace: "nowrap" }}
+                  title="Sort by Produced date/time"
+                >
+                  Produced {producedArrow}
+                </th>
               </tr>
             </thead>
             <tbody>

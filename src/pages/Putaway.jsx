@@ -2,12 +2,14 @@ import { useEffect, useRef, useState } from "react";
 import { supabase } from "../supabaseClient";
 import Papa from "papaparse";
 import { saveAs } from "file-saver";
+import { useToast } from "../ui/toast.jsx";
 
 function normBin(s) {
   return (s || "").trim().toUpperCase();
 }
 
 export default function Putaway() {
+  const { push } = useToast();
   const [bins, setBins] = useState([]);
   const [bin, setBin] = useState("");
   const [binNorm, setBinNorm] = useState("");
@@ -19,6 +21,10 @@ export default function Putaway() {
   const [loadingC, setLoadingC] = useState(false);
   const [loadingU, setLoadingU] = useState(false);
   const [message, setMessage] = useState("");
+
+  // Pagination for unbinned
+  const [page, setPage] = useState(0);
+  const pageSize = 50;
 
   const [autoMode, setAutoMode] = useState(true);
   const debounceRef = useRef(null);
@@ -44,7 +50,7 @@ export default function Putaway() {
         setBins((data || []).map((b) => b.code));
       } catch (e) {
         console.error(e);
-        setMessage(e.message || String(e));
+        push(e.message || String(e), "err");
       }
     })();
   }, []);
@@ -70,7 +76,7 @@ export default function Putaway() {
       if (error) throw error;
       setContents(data || []);
     } catch (e) {
-      setMessage(e.message || String(e));
+      push(e.message || String(e), "err");
       setContents([]);
     } finally {
       setLoadingC(false);
@@ -80,14 +86,19 @@ export default function Putaway() {
   async function loadUnbinned() {
     setLoadingU(true);
     try {
+      const from = page * pageSize;
+      const to = from + pageSize - 1;
+
       const { data, error } = await supabase
         .from("v_unbinned_live_packets")
         .select("packet_code, finished_good_name, status, produced_at")
-        .order("produced_at", { ascending: false });
+        .order("produced_at", { ascending: false })
+        .range(from, to);
+
       if (error) throw error;
       setUnbinned(data || []);
     } catch (e) {
-      setMessage(e.message || String(e));
+      push(e.message || String(e), "err");
       setUnbinned([]);
     } finally {
       setLoadingU(false);
@@ -123,9 +134,9 @@ export default function Putaway() {
       try {
         supabase.removeChannel(ch1);
         supabase.removeChannel(ch2);
-      } catch {}
+      } catch { }
     };
-  }, [binNorm]);
+  }, [binNorm, page]); // Reload when page changes too
 
   useEffect(() => {
     loadContents();
@@ -144,9 +155,10 @@ export default function Putaway() {
       });
       if (error) throw error;
       setScan("");
+      push(`Assigned ${barcode} to ${binNorm}`, "ok");
       await Promise.all([loadUnbinned(), loadContents()]);
     } catch (e) {
-      alert(e.message || String(e));
+      push(e.message || String(e), "err");
     } finally {
       setAssigning(false);
       setTimeout(() => scanRef.current?.focus(), 0);
@@ -197,51 +209,48 @@ export default function Putaway() {
     setBulkRunning(true);
     setBulkProgress(0);
     setBulkColor("var(--accent)");
-    const results = [];
 
-    for (let i = 0; i < bulkRows.length; i++) {
-      const row = bulkRows[i];
-      try {
-        const { error } = await supabase.rpc("assign_packet_to_bin", {
-          p_packet_code: row.packet_code,
-          p_bin_code: row.bin_code,
-        });
-        if (error)
-          results.push({
-            ...row,
-            success: false,
-            message: error.message || "Error",
-          });
-        else results.push({ ...row, success: true });
-      } catch (e) {
-        results.push({
-          ...row,
-          success: false,
-          message: e.message || String(e),
-        });
+    try {
+      // Call the bulk RPC function with all rows at once
+      const { data: results, error } = await supabase.rpc("assign_packets_bulk_fast", {
+        p_records: bulkRows
+      });
+
+      if (error) throw error;
+
+      // Process results
+      const formattedResults = (results || []).map(r => ({
+        packet_code: r.packet_code,
+        bin_code: r.bin_code,
+        success: r.success,
+        message: r.error_message || ""
+      }));
+
+      setBulkResults(formattedResults);
+      setBulkProgress(100);
+      setBulkRunning(false);
+      await Promise.all([loadUnbinned(), loadContents()]);
+
+      const allSuccess = formattedResults.every((r) => r.success);
+      const anyFailed = formattedResults.some((r) => !r.success);
+
+      if (allSuccess) {
+        setBulkColor("var(--ok)");
+        push("✅ All packets successfully assigned!", "ok");
+        setTimeout(() => {
+          setBulkRows([]);
+          setBulkResults([]);
+          setBulkProgress(0);
+        }, 1200);
+      } else if (anyFailed) {
+        setBulkColor("var(--err)");
+        const failedCount = formattedResults.filter(r => !r.success).length;
+        push(`⚠️ ${failedCount} packet(s) failed. Download error report for details.`, "warn");
       }
-      setBulkProgress(((i + 1) / bulkRows.length) * 100);
-    }
-
-    setBulkResults(results);
-    setBulkRunning(false);
-    await Promise.all([loadUnbinned(), loadContents()]);
-
-    const allSuccess = results.every((r) => r.success);
-    const anyFailed = results.some((r) => !r.success);
-
-    if (allSuccess) {
-      setBulkColor("var(--ok)");
-      setMessage("✅ All packets successfully assigned!");
-      setTimeout(() => {
-        setMessage("");
-        setBulkRows([]);
-        setBulkResults([]);
-        setBulkProgress(0);
-      }, 1200);
-    } else if (anyFailed) {
+    } catch (e) {
+      setBulkRunning(false);
       setBulkColor("var(--err)");
-      setMessage("⚠️ Some packets failed. Please download the error report.");
+      push(e.message || String(e), "err");
     }
   }
 
@@ -277,11 +286,6 @@ export default function Putaway() {
           <b>Bin Putaway</b>
         </div>
         <div className="bd">
-          {!!message && (
-            <div className="badge ok" style={{ marginBottom: 8 }}>
-              {message}
-            </div>
-          )}
           <div
             className="row"
             style={{ gap: 8, marginBottom: 8, alignItems: "center" }}
@@ -477,7 +481,23 @@ export default function Putaway() {
       <div className="card">
         <div className="hd">
           <b>Unbinned Live Packets</b>
-          <span className="badge">{unbinned.length} items</span>
+          <div className="row" style={{ gap: 8 }}>
+            <button
+              className="btn small outline"
+              disabled={page === 0}
+              onClick={() => setPage(p => Math.max(0, p - 1))}
+            >
+              Previous
+            </button>
+            <span className="badge">Page {page + 1}</span>
+            <button
+              className="btn small outline"
+              disabled={unbinned.length < pageSize}
+              onClick={() => setPage(p => p + 1)}
+            >
+              Next
+            </button>
+          </div>
         </div>
         <div className="bd" style={{ overflow: "auto" }}>
           <table className="table">
@@ -507,7 +527,7 @@ export default function Putaway() {
               {!unbinned.length && (
                 <tr>
                   <td colSpan="4" style={{ color: "var(--muted)" }}>
-                    No unbinned packets
+                    {loadingU ? "Loading..." : "No unbinned packets"}
                   </td>
                 </tr>
               )}
