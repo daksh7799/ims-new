@@ -21,7 +21,10 @@ export default function LiveBarcodes() {
   const [page, setPage] = useState(1);
   const [loading, setLoading] = useState(true);
 
-  const [q, setQ] = useState("");
+  // Debounced search: separate input value from actual search query
+  const [searchInput, setSearchInput] = useState(""); // What user types
+  const [q, setQ] = useState(""); // Actual search query (debounced)
+
   // all / available / returned / returned_no_barcode
   const [statusFilter, setStatusFilter] = useState("all");
   const [fromDate, setFromDate] = useState("");
@@ -32,6 +35,15 @@ export default function LiveBarcodes() {
   const [returnedSortDir, setReturnedSortDir] = useState("desc"); // asc / desc
   const [producedSortDir, setProducedSortDir] = useState("desc"); // asc / desc - newest first by default
   const [activeSort, setActiveSort] = useState("produced"); // "produced" or "returned"
+
+  // Debounce search input - only update q after user stops typing for 300ms
+  useEffect(() => {
+    const timer = setTimeout(() => {
+      setQ(searchInput);
+    }, 500);
+
+    return () => clearTimeout(timer);
+  }, [searchInput]);
 
   const navigate = useNavigate();
 
@@ -160,6 +172,7 @@ export default function LiveBarcodes() {
 
   /** -------------------- CLEAR FILTER -------------------- **/
   function clearFilters() {
+    setSearchInput("");
     setQ("");
     setFromDate("");
     setToDate("");
@@ -288,8 +301,8 @@ export default function LiveBarcodes() {
           <div className="row" style={{ gap: 8, flexWrap: "wrap" }}>
             <input
               placeholder="Search barcode / item / bin…"
-              value={q}
-              onChange={(e) => { setQ(e.target.value); setPage(1); }}
+              value={searchInput}
+              onChange={(e) => setSearchInput(e.target.value)}
               style={{ minWidth: 240 }}
             />
 
