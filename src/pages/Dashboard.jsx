@@ -1,5 +1,15 @@
 import { useEffect, useMemo, useState } from 'react'
 import { supabase } from '../supabaseClient'
+import {
+  BarChart,
+  Bar,
+  XAxis,
+  YAxis,
+  CartesianGrid,
+  Tooltip,
+  Legend,
+  ResponsiveContainer
+} from 'recharts'
 
 /** ✅ Updated customer list (from your DB actual names) */
 const CUSTOMER_LIST = [
@@ -174,7 +184,30 @@ export default function Dashboard() {
           <span className="badge">Hover bars for instant info</span>
         </div>
         <div className="bd">
-          <CombinedBars data={combined} height={220} />
+          <ResponsiveContainer width="100%" height={220}>
+            <BarChart data={combined} margin={{ top: 10, right: 10, left: 0, bottom: 0 }}>
+              <CartesianGrid strokeDasharray="3 3" vertical={false} stroke="#e2e8f0" />
+              <XAxis
+                dataKey="sale_date"
+                tickFormatter={formatDayShort}
+                axisLine={false}
+                tickLine={false}
+              />
+              <YAxis axisLine={false} tickLine={false} />
+              <Tooltip
+                contentStyle={{
+                  backgroundColor: 'rgba(0, 0, 0, 0.9)',
+                  border: 'none',
+                  borderRadius: '6px',
+                  color: 'white'
+                }}
+                labelFormatter={(label) => formatDayLabel(label)}
+              />
+              <Legend />
+              <Bar dataKey="sales" name="Sales" fill="#22c55e" radius={[4, 4, 0, 0]} />
+              <Bar dataKey="returns" name="Returns" fill="#ef4444" radius={[4, 4, 0, 0]} />
+            </BarChart>
+          </ResponsiveContainer>
         </div>
       </div>
 
@@ -201,7 +234,7 @@ export default function Dashboard() {
                 {(top || []).map((r, idx) => (
                   <tr key={r.finished_good_id || idx}
                     style={{
-                      background: `linear-gradient(90deg, rgba(34,197,94,.15) ${(Number(r.units||0)/topMax)*85}%, transparent 0)`
+                      background: `linear-gradient(90deg, rgba(34,197,94,.15) ${(Number(r.units || 0) / topMax) * 85}%, transparent 0)`
                     }}>
                     <td>{idx + 1}</td>
                     <td>{r.finished_good_name}</td>
@@ -225,7 +258,7 @@ export default function Dashboard() {
                 {(cust || []).map((c) => (
                   <tr key={c.customer_name}
                     style={{
-                      background: `linear-gradient(90deg, rgba(59,130,246,.15) ${(Number(c.units||0)/custMax)*85}%, transparent 0)`
+                      background: `linear-gradient(90deg, rgba(59,130,246,.15) ${(Number(c.units || 0) / custMax) * 85}%, transparent 0)`
                     }}>
                     <td>{c.customer_name}</td>
                     <td style={{ textAlign: 'right', fontWeight: 700 }}>{c.units}</td>
@@ -252,45 +285,6 @@ function KPI({ title, value, color }) {
   )
 }
 
-/* ---------- Combined Bars (Fast Hover) ---------- */
-function CombinedBars({ data, height = 220 }) {
-  const max = Math.max(1, ...data.map(d => Math.max(Number(d.sales||0), Number(d.returns||0))))
-  return (
-    <div style={{ display: 'grid', gridTemplateColumns: 'repeat(7,1fr)', gap: 14, alignItems: 'end', height }}>
-      {data.map((d, idx) => {
-        const hSales = (Number(d.sales||0) / max) * (height - 36)
-        const hReturns = (Number(d.returns||0) / max) * (height - 36)
-        return (
-          <div key={idx} style={{ display: 'grid', alignItems: 'end', gap: 6 }}>
-            <div className="row" style={{ gap: 6, alignItems: 'end', position: 'relative' }}>
-              <div className="bar"
-                data-tip={`${formatDayLabel(d.sale_date)} — Sales: ${d.sales}`}
-                style={{
-                  height: Math.max(6, hSales),
-                  flex: 1,
-                  background: 'linear-gradient(180deg, rgba(34,197,94,.85), rgba(16,185,129,.85))',
-                  border: '1px solid #1b3c2d',
-                  borderRadius: 8,
-                  position: 'relative'
-                }}/>
-              <div className="bar"
-                data-tip={`${formatDayLabel(d.sale_date)} — Returns: ${d.returns}`}
-                style={{
-                  height: Math.max(6, hReturns),
-                  flex: 1,
-                  background: 'linear-gradient(180deg, rgba(239,68,68,.85), rgba(248,113,113,.85))',
-                  border: '1px solid #4a1f1f',
-                  borderRadius: 8,
-                  position: 'relative'
-                }}/>
-            </div>
-            <div className="s" style={{ textAlign: 'center' }}>{formatDayShort(d.sale_date)}</div>
-          </div>
-        )
-      })}
-    </div>
-  )
-}
 
 /* ---------- Helpers ---------- */
 function sumUnits(rows) {
@@ -298,25 +292,25 @@ function sumUnits(rows) {
 }
 function mergeSalesReturns(sales, returns) {
   const map = new Map()
-  ;(sales || []).forEach(s => map.set(s.sale_date, { sale_date: s.sale_date, sales: Number(s.units||0), returns: 0 }))
-  ;(returns || []).forEach(r => {
-    const row = map.get(r.sale_date) || { sale_date: r.sale_date, sales: 0, returns: 0 }
-    row.returns = Number(r.units || 0)
-    map.set(r.sale_date, row)
-  })
-  return Array.from(map.values()).sort((a,b)=>a.sale_date.localeCompare(b.sale_date))
+    ; (sales || []).forEach(s => map.set(s.sale_date, { sale_date: s.sale_date, sales: Number(s.units || 0), returns: 0 }))
+    ; (returns || []).forEach(r => {
+      const row = map.get(r.sale_date) || { sale_date: r.sale_date, sales: 0, returns: 0 }
+      row.returns = Number(r.units || 0)
+      map.set(r.sale_date, row)
+    })
+  return Array.from(map.values()).sort((a, b) => a.sale_date.localeCompare(b.sale_date))
 }
 function fillLastNDays(rows, n) {
   const today = new Date()
   const map = new Map()
-  ;(rows||[]).forEach(r => {
-    const key = (r.sale_date || '').slice(0,10)
-    map.set(key, Number(r.units||0))
-  })
+    ; (rows || []).forEach(r => {
+      const key = (r.sale_date || '').slice(0, 10)
+      map.set(key, Number(r.units || 0))
+    })
   const out = []
-  for (let i=n-1; i>=0; i--) {
-    const d = new Date(today); d.setDate(today.getDate()-i)
-    const key = d.toISOString().slice(0,10)
+  for (let i = n - 1; i >= 0; i--) {
+    const d = new Date(today); d.setDate(today.getDate() - i)
+    const key = d.toISOString().slice(0, 10)
     out.push({ sale_date: key, units: map.get(key) || 0 })
   }
   return out
