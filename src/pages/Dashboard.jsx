@@ -92,7 +92,7 @@ export default function Dashboard() {
   }
 
   async function loadTop(p) {
-    const { data, error } = await supabase.rpc('dash_top_products', { p_days: p, p_limit: 50 })
+    const { data, error } = await supabase.rpc('dash_top_products', { p_days: p, p_limit: 100 })
     if (error) {
       console.warn('Top products error:', error.message)
       setTop([])
@@ -183,7 +183,7 @@ export default function Dashboard() {
         {/* Top sellers */}
         <div className="card">
           <div className="hd">
-            <b>📦 Top 50 Products</b>
+            <b>📦 Top 100 Products</b>
             <div className="row" style={{ gap: 8 }}>
               <select value={period} onChange={(e) => setPeriod(Number(e.target.value))}>
                 {PERIODS.map((p) => (
