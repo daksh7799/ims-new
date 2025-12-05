@@ -377,9 +377,15 @@ export default function SKUMappings() {
 
             if (err2) throw err2
 
+            // Build SKU map for O(1) lookup instead of O(n) find
+            const skuMap = {}
+            skuData.forEach(s => {
+                skuMap[s.sku] = s
+            })
+
             const exportRows = []
             itemsData?.forEach(item => {
-                const skuMapping = skuData.find(s => s.sku === item.sku)
+                const skuMapping = skuMap[item.sku]
                 exportRows.push({
                     'SKU': item.sku,
                     'Finished Good': item.finished_goods?.name || '',
@@ -388,20 +394,20 @@ export default function SKUMappings() {
                 })
             })
 
-            const ws = XLSX.utils.json_to_sheet(exportRows)
-            const wb = XLSX.utils.book_new()
-            XLSX.utils.book_append_sheet(wb, ws, 'SKU Mappings')
+            // Export as CSV (faster and smaller for large datasets)
+            const headers = ['SKU', 'Finished Good', 'Qty per SKU', 'Description']
+            const csvContent = [
+                headers.join(','),
+                ...exportRows.map(r => [
+                    `"${r.SKU}"`,
+                    `"${r['Finished Good']}"`,
+                    r['Qty per SKU'],
+                    `"${r.Description}"`
+                ].join(','))
+            ].join('\n')
 
-            const maxWidth = 50
-            const colWidths = [
-                { wch: Math.min(maxWidth, Math.max(10, ...exportRows.map(r => String(r.SKU || '').length))) },
-                { wch: Math.min(maxWidth, Math.max(15, ...exportRows.map(r => String(r['Finished Good'] || '').length))) },
-                { wch: 12 },
-                { wch: Math.min(maxWidth, Math.max(15, ...exportRows.map(r => String(r.Description || '').length))) }
-            ]
-            ws['!cols'] = colWidths
-
-            XLSX.writeFile(wb, `sku_mappings_export_${new Date().toISOString().split('T')[0]}.xlsx`)
+            const blob = new Blob([csvContent], { type: 'text/csv;charset=utf-8;' })
+            saveAs(blob, `sku_mappings_export_${new Date().toISOString().split('T')[0]}.csv`)
             push(`Exported ${exportRows.length} SKU mapping items (${skuCodes.length} unique SKUs)`, 'ok')
         } catch (err) {
             console.error('Export error:', err)
@@ -719,11 +725,11 @@ export default function SKUMappings() {
                     {/* Export Section */}
                     <div style={{ paddingBottom: 12, borderBottom: '1px solid var(--border)' }}>
                         <div className="row" style={{ gap: 8, marginBottom: 8 }}>
-                            <button className="btn" onClick={exportCurrentSKUs}>📥 Export to Excel</button>
+                            <button className="btn" onClick={exportCurrentSKUs}>📥 Export to CSV</button>
                             <button className="btn ghost" onClick={downloadSampleCSV}>📄 Download Sample CSV</button>
                         </div>
                         <div className="s" style={{ color: 'var(--muted)' }}>
-                            Export current SKU mappings to Excel. {q ? 'Will export filtered results only.' : 'Will export all SKU mappings.'}
+                            Export current SKU mappings to CSV. {q ? 'Will export filtered results only.' : 'Will export all SKU mappings.'}
                         </div>
                     </div>
 
