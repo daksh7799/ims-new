@@ -291,37 +291,89 @@ export default function SKUMappings() {
         try {
             push('Exporting SKU mappings...', 'ok')
 
-            let dataQuery = supabase.from('sku_mappings').select('*').order('sku', { ascending: true })
+            // Fetch ALL SKUs using range-based pagination (not limited by page/pageSize)
+            let allSkuData = []
+            let skuOffset = 0
+            const SKU_FETCH_SIZE = 1000
+            let hasMoreSKUs = true
 
+            let baseQuery = supabase.from('sku_mappings').select('*').order('sku', { ascending: true })
             if (q.trim()) {
                 const searchTerm = `%${q.trim()}%`
-                dataQuery = dataQuery.ilike('sku', searchTerm)
+                baseQuery = baseQuery.ilike('sku', searchTerm)
             }
 
-            // Parallel fetch: SKUs and then items (we need SKUs first to get codes, but we can optimize)
-            // Actually, we need SKUs first to filter items. But we can fetch all items if we are exporting ALL.
-            // If filtered, we need SKUs first. Let's keep it sequential but optimized or use Promise.all if we can.
-            // Since we need skuCodes for the second query, we can't fully parallelize without fetching ALL items which might be huge.
-            // However, we can use the same filter on items if we joined, but Supabase join syntax is different.
-            // Let's stick to the current logic but maybe optimize if possible. 
-            // Actually, the user suggested parallelizing like load().
-            // In load() we do count and data in parallel. Here we don't need count.
-            // We can't parallelize items fetch because it depends on skuData.
-            // So we'll keep it as is, but maybe clean up.
+            // Fetch all SKUs in chunks
+            while (hasMoreSKUs) {
+                const { data: skuChunk, error: skuErr } = await baseQuery
+                    .range(skuOffset, skuOffset + SKU_FETCH_SIZE - 1)
 
-            const { data: skuData, error: err1 } = await dataQuery
-            if (err1) throw err1
+                if (skuErr) throw skuErr
+
+                if (skuChunk && skuChunk.length > 0) {
+                    allSkuData = allSkuData.concat(skuChunk)
+                    skuOffset += SKU_FETCH_SIZE
+
+                    if (skuChunk.length < SKU_FETCH_SIZE) {
+                        hasMoreSKUs = false
+                    }
+                } else {
+                    hasMoreSKUs = false
+                }
+            }
+
+            const skuData = allSkuData
             if (!skuData || skuData.length === 0) return push('No SKU mappings to export', 'warn')
 
             const skuCodes = skuData.map(s => s.sku)
+            const skuSet = new Set(skuCodes) // For fast lookup
 
-            // Fetch items
-            const { data: itemsData, error: err2 } = await supabase
-                .from('sku_mapping_items')
-                .select('*, finished_goods(id, name)')
-                .in('sku', skuCodes)
-                .order('sku')
-                .order('id')
+            // Fetch ALL items using range-based pagination (not filtered by SKU in query)
+            // This is more reliable than trying to use .in() with large arrays
+            let allItemsData = []
+            let err2 = null
+
+            push(`Fetching all SKU mapping items...`, 'ok')
+
+            const ROWS_PER_FETCH = 1000
+            let currentOffset = 0
+            let hasMore = true
+
+            while (hasMore) {
+                const { data: chunkItems, error: chunkErr } = await supabase
+                    .from('sku_mapping_items')
+                    .select('*, finished_goods(id, name)')
+                    .order('sku')
+                    .order('id')
+                    .range(currentOffset, currentOffset + ROWS_PER_FETCH - 1)
+
+                if (chunkErr) {
+                    err2 = chunkErr
+                    break
+                }
+
+                if (chunkItems && chunkItems.length > 0) {
+                    // Filter to only include items for SKUs we're exporting
+                    const filteredItems = chunkItems.filter(item => skuSet.has(item.sku))
+                    allItemsData = allItemsData.concat(filteredItems)
+
+                    currentOffset += ROWS_PER_FETCH
+
+                    // Show progress
+                    if (currentOffset % 5000 === 0 || chunkItems.length < ROWS_PER_FETCH) {
+                        push(`Fetched ${currentOffset} rows... (${allItemsData.length} matching items)`, 'ok')
+                    }
+
+                    // If we got less than ROWS_PER_FETCH, we've reached the end
+                    if (chunkItems.length < ROWS_PER_FETCH) {
+                        hasMore = false
+                    }
+                } else {
+                    hasMore = false
+                }
+            }
+
+            const itemsData = allItemsData
 
             if (err2) throw err2
 
