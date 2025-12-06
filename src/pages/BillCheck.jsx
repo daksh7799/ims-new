@@ -233,8 +233,8 @@ export default function BillCheck() {
         const lines = billDetails.map((line) => {
             const qty = Number(line.qty) || 0;
             const rate = Number(line.rate) || 0;
-            const amount = qty * rate;
-            const gstRate = Number(line.raw_materials?.gst_rate) || 5;
+            const amount = Math.round((qty * rate) * 100) / 100; // Round to 2 decimal places
+            const gstRate = line.raw_materials?.gst_rate != null ? Number(line.raw_materials.gst_rate) : 5;
 
             let sgst = 0, cgst = 0, igst = 0;
             if (isRajasthan) {
@@ -374,8 +374,8 @@ export default function BillCheck() {
                 const processedLines = lines.map(line => {
                     const qty = Number(line.qty) || 0;
                     const rate = Number(line.rate) || 0;
-                    const amount = qty * rate;
-                    const gstRate = Number(line.raw_materials?.gst_rate) || 5;
+                    const amount = Math.round((qty * rate) * 100) / 100; // Round to 2 decimal places
+                    const gstRate = line.raw_materials?.gst_rate != null ? Number(line.raw_materials.gst_rate) : 5;
 
                     let sgst = 0, cgst = 0, igst = 0;
                     if (isRajasthan) {
