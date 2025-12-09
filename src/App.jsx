@@ -10,6 +10,7 @@ import Dashboard from './pages/Dashboard.jsx'
 import RawInward from './pages/RawInward.jsx'
 import BOM from './pages/BOM.jsx'
 import Manufacture from './pages/Manufacture.jsx'
+import ManufacturingOrders from './pages/ManufacturingOrders.jsx' // 👈 MO System
 import LiveBarcodes from './pages/LiveBarcodes.jsx'
 import Putaway from './pages/Putaway.jsx'
 import BinInventory from './pages/BinInventory.jsx'
@@ -38,7 +39,6 @@ import RawInwardReport from './pages/RawInwardReport.jsx'
 import DailyStockReport from './pages/DailyStockReport.jsx';
 import SKUMappings from './pages/SKUMappings.jsx' // 👈 SKU Mapping System
 import RawConsumed from './pages/RawConsumed.jsx' // 👈 NEW MODULE
-import ManufacturingOrders from './pages/ManufacturingOrders.jsx' // 👈 MO System
 
 
 // Stock check UI (route only; not in sidebar)
@@ -50,8 +50,8 @@ import ManufacturingGate from './components/ManufacturingGate.jsx'
 const LINKS = [
   { key: 'dashboard', path: '/', label: 'Dashboard', end: true },
   { key: 'raw', path: '/raw', label: 'Raw Inward' },
-  { key: 'bom', path: '/bom', label: 'BOM' },
   { key: 'mfg', path: '/mfg', label: 'Manufacture' },
+  { key: 'mo-admin', path: '/mo-admin', label: 'Pending Production' }, // 👈 NEW MODULE
   { key: 'live', path: '/live', label: 'Live Barcodes' },
   { key: 'putaway', path: '/putaway', label: 'Bins (Putaway)' },
   { key: 'bin-inv', path: '/bin-inv', label: 'Bin Inventory' },
@@ -60,28 +60,24 @@ const LINKS = [
   { key: 'returns', path: '/returns', label: 'Returns' },
   { key: 'inv-rm', path: '/inv-rm', label: 'RM Inventory' },
   { key: 'inv-fg', path: '/inv-fg', label: 'FG Inventory' },
-  { key: 'blends', path: '/blends', label: 'Blend Recipes' },
   { key: 'blend-mfg', path: '/blend-manufacture', label: 'Blend Manufacture' },
+  { key: 'raw-process', path: '/raw-process', label: 'Raw Process' },
   { key: 'bill-check', path: '/bill-check', label: 'Bill Check' },
   { key: 'ledger', path: '/ledger', label: 'Ledger' }, // 👈 ADDED HERE
-
   // utilities
   { key: 'trace', path: '/trace', label: 'Packet Trace' },
   { key: 'raw-adjust', path: '/raw-adjust', label: 'Raw Adjust' },
   { key: 'so-admin', path: '/so-admin', label: 'SO Admin' },
-  { key: 'raw-process', path: '/raw-process', label: 'Raw Process' },
   { key: 'fg-sales', path: '/fg-sales', label: 'FG Sales Report' },
   { key: 'daily-report', path: '/daily-report', label: 'Daily Stock Report' }, // ← add this
   { key: 'raw-inward-report', path: '/raw-inward-report', label: 'Raw Inward Report' }, // ← add this
-
-
+  { key: 'raw-consumed', path: '/raw-consumed', label: 'Raw Consumed' }, 
   // admin
   { key: 'masters', path: '/masters', label: 'Masters' },
   { key: 'admin', path: '/admin', label: 'Admin' },
   { key: 'sku-mappings', path: '/sku-mappings', label: 'SKU Mappings' },
-  { key: 'raw-consumed', path: '/raw-consumed', label: 'Raw Consumed' }, // 👈 NEW MODULE
-  { key: 'mo-admin', path: '/mo-admin', label: 'Pending Production' }, // 👈 NEW MODULE
-
+  { key: 'bom', path: '/bom', label: 'BOM' },// 👈 NEW MODULE
+  { key: 'blends', path: '/blends', label: 'Blend Recipes' },
 ]
 
 export default function App() {
