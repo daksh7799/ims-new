@@ -9,7 +9,7 @@ const ALL_MODULES = [
   // utilities
   'trace','raw-adjust','so-admin','raw-process','fg-sales','daily-report', // ✅ Added fg-sales here
   // admin areas
-  'masters','admin','bill-check','ledger',
+  'masters','admin','bill-check','ledger','mo-admin',
 ]
 
 // Optional quick presets for convenience

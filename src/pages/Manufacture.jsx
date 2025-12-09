@@ -322,6 +322,7 @@ export default function ManufacturePage() {
       const missing = [];
       const batchIds = []; // Collect batch IDs for bulk packet fetch
       const batchToName = {}; // Map batch_id to display name
+      const insufficientStockItems = []; // Items to be added to MO
 
       // Create all batches first
       for (const [normKey, val] of entries) {
@@ -339,9 +340,22 @@ export default function ManufacturePage() {
             p_qty_units: val.qty,
           }
         );
+
         if (error) {
-          console.error("RPC failed for", val.name, error);
-          push(`Failed for ${val.name}: ${error.message}`, "err");
+          // Check for insufficient stock error
+          if (error.message && error.message.includes("Insufficient stock")) {
+            insufficientStockItems.push({
+              finished_good_id: fgUUID,
+              qty: val.qty,
+              name: val.name
+            });
+            // Don't show individual toast for bulk stock errors to avoid spam, 
+            // we will show summary at the end.
+            console.warn(`Insufficient stock for ${val.name}: ${error.message}`);
+          } else {
+            console.error("RPC failed for", val.name, error);
+            push(`Failed for ${val.name}: ${error.message}`, "err");
+          }
           continue;
         }
 
@@ -378,6 +392,22 @@ export default function ManufacturePage() {
         }
       }
 
+      // Handle insufficient stock items - create MO
+      if (insufficientStockItems.length > 0) {
+        const { data: moId, error: moError } = await supabase.rpc("create_manufacturing_order", {
+          p_lines: insufficientStockItems,
+          p_note: "Created from Bulk Manufacture (Insufficient Stock)"
+        });
+
+        if (moError) {
+          console.error("Failed to create MO", moError);
+          push(`Failed to create pending order: ${moError.message}`, "err");
+        } else {
+          push(`📋 ${insufficientStockItems.length} items added to relevant Order`, "ok"); // Keep message simple as requested? Or detailed?
+          // Let's stick to the plan's suggestion
+        }
+      }
+
       if (missing.length > 0) {
         push(`Skipped ${missing.length} FGs (not found): ${missing.slice(0, 3).join(", ")}...`, "warn");
       }
@@ -389,10 +419,16 @@ export default function ManufacturePage() {
         /* ignore */
       }
 
-      if (allCreated.length > 0) {
-        push(`Bulk manufacturing complete — ${allCreated.length} packets created.`, "ok");
-        // Clear the upload preview after successful creation
+      if (allCreated.length > 0 || insufficientStockItems.length > 0) {
+        let msg = `Bulk complete.`;
+        if (allCreated.length > 0) msg += ` ✅ ${allCreated.length} packets created.`;
+        if (insufficientStockItems.length > 0) msg += ` 📋 ${insufficientStockItems.length} items added to Pending Order.`;
+
+        push(msg, "ok");
+        // Clear the upload preview after successful creation/queuing
         setRows([]);
+      } else if (missing.length === 0 && insufficientStockItems.length === 0) {
+        push("No packets created.", "warn");
       }
     } catch (err) {
       console.error("Bulk run failed:", err);
