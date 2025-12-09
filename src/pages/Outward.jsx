@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
 import { supabase } from '../supabaseClient'
 import { Link, useLocation } from 'react-router-dom'
+import { fetchBinsForFgNames, fetchBinsForPrint } from '../utils/binFetcher'
 
 function fmtDT(ts) {
   if (!ts) return '—'
@@ -198,7 +199,7 @@ export default function Outward() {
     return () => clearTimeout(typing.current)
   }, [scan, auto, soId])
 
-  /** -------------------- BIN INVENTORY (exact server-side fetch, no fuzzy) -------------------- **/
+  /** -------------------- BIN INVENTORY (chunked fetch with proper pagination) -------------------- **/
   async function loadBinsForCurrentLines() {
     setBinsByFg({})
     const fgNames = Array.from(new Set((lines || [])
@@ -208,85 +209,14 @@ export default function Outward() {
 
     setLoadingBins(true)
     try {
-      let allBins = null
-      let error = null
-
-      // Preferred: server-side exact-match for only required finished_good_name values.
-      try {
-        const res = await supabase
-          .from('v_bin_inventory')
-          .select('finished_good_name, bin_code, produced_at')
-          .in('finished_good_name', fgNames)
-        allBins = res.data
-        error = res.error
-        console.debug('v_bin_inventory .in() returned rows:', (allBins || []).length)
-      } catch (e) {
-        console.warn('v_bin_inventory .in() failed', e)
-        allBins = null
-        error = e
-      }
-
-      // Fallback: explicitly fetch a large range to avoid silent truncation.
-      if (!allBins || allBins.length === 0) {
-        console.debug('Fallback range fetch (0..5000) because .in() returned 0 rows or failed')
-        const res2 = await supabase
-          .from('v_bin_inventory')
-          .select('finished_good_name, bin_code, produced_at')
-          .range(0, 8000) // adjust if you have >5k rows
-        allBins = res2.data
-        error = error || res2.error
-        console.debug('v_bin_inventory .range() returned rows:', (allBins || []).length)
-      }
-
-      if (error) {
-        console.warn('v_bin_inventory fetch error:', error)
-        // continue with whatever we have
-      }
-      allBins = allBins || []
-
-      console.debug('loadBinsForCurrentLines: wanted fgNames:', fgNames)
-      console.debug('loadBinsForCurrentLines: sample normalized bin names:',
-        (allBins || []).slice(0, 12).map(r => ({ raw: r.finished_good_name, n: norm(r.finished_good_name) })))
-
-      const results = {}
-      for (const rawName of fgNames) {
-        // Use server-side exact matches only (raw string equality as returned by .in())
-        // We still compute key using norm(rawName) so UI lookups match.
-        const key = norm(rawName)
-        const rows = (allBins || []).filter(r => String(r.finished_good_name || '').trim() === rawName)
-
-        if (!rows.length) {
-          console.debug('No bins found for (exact) ->', rawName)
-        } else {
-          console.debug('Exact matched', rows.length, 'rows for', rawName)
-        }
-
-        // aggregate per bin_code
-        const perBin = new Map()
-        for (const r of rows) {
-          const bin = r.bin_code || '—'
-          const prod = r.produced_at ? Date.parse(r.produced_at) : Number.POSITIVE_INFINITY
-          const got = perBin.get(bin) || { qty: 0, oldest: Number.POSITIVE_INFINITY }
-          got.qty += 1
-          if (prod < got.oldest) got.oldest = prod
-          perBin.set(bin, got)
-        }
-
-        const arr = [...perBin.entries()].map(([bin_code, v]) => ({
-          bin_code,
-          qty: v.qty,
-          oldest_produced_at: isFinite(v.oldest) ? new Date(v.oldest).toISOString() : null
-        }))
-        arr.sort((a, b) => {
-          const ta = a.oldest_produced_at ? Date.parse(a.oldest_produced_at) : Number.POSITIVE_INFINITY
-          const tb = b.oldest_produced_at ? Date.parse(b.oldest_produced_at) : Number.POSITIVE_INFINITY
-          return ta !== tb ? ta - tb : String(a.bin_code).localeCompare(String(b.bin_code))
-        })
-
-        results[key] = arr
-      }
-
+      const results = await fetchBinsForFgNames(supabase, fgNames, {
+        chunkSize: 50,  // Avoid URL length limits
+        pageSize: 1000  // Proper pagination
+      })
       setBinsByFg(results)
+    } catch (error) {
+      console.error('loadBinsForCurrentLines: Failed to fetch bins', error)
+      setBinsByFg({})  // Set empty on error
     } finally {
       setLoadingBins(false)
     }
@@ -334,53 +264,18 @@ export default function Outward() {
 
       const fgNames = rows.map(l => l.finished_good_name).filter(Boolean)
 
-      // ======== SAFER BIN FETCH FOR PRINT ========
-      // Prefer server-side exact-match on finished_good_name so we don't hit page-size truncation.
-      let allBinsForPrint = null
-      let fetchErr = null
+      // ======== CHUNKED BIN FETCH FOR PRINT ========
+      let binsByFgLocal = {}
       try {
-        const res = await supabase
-          .from('v_bin_inventory')
-          .select('finished_good_name, bin_code, produced_at')
-          .in('finished_good_name', fgNames)
-        allBinsForPrint = res.data
-        fetchErr = res.error
-        console.debug('printSO: v_bin_inventory .in() returned rows:', (allBinsForPrint || []).length)
-      } catch (e) {
-        console.warn('printSO: v_bin_inventory .in() failed', e)
-        allBinsForPrint = null
-        fetchErr = e
-      }
-
-      // fallback to large range if .in() didn't return results (adjust upper bound if needed)
-      if (!allBinsForPrint || allBinsForPrint.length === 0) {
-        console.debug('printSO: fallback range fetch (0..5000) to avoid truncation')
-        const res2 = await supabase
-          .from('v_bin_inventory')
-          .select('finished_good_name, bin_code, produced_at')
-          .range(0, 8000)
-        allBinsForPrint = res2.data
-        fetchErr = fetchErr || res2.error
-        console.debug('printSO: v_bin_inventory .range() returned rows:', (allBinsForPrint || []).length)
-      }
-      allBinsForPrint = allBinsForPrint || []
-      if (fetchErr) console.warn('printSO: v_bin_inventory fetch error:', fetchErr)
-
-      // build binsByFgLocal keyed by normalized name (same normalization used elsewhere)
-      const binsByFgLocal = {}
-      const wantedNorms = new Set(fgNames.map(n => norm(n)))
-        ; (allBinsForPrint || []).forEach(r => {
-          const k = norm(r.finished_good_name)
-          if (!wantedNorms.has(k)) return
-          binsByFgLocal[k] = binsByFgLocal[k] || {}
-          const bin = r.bin_code || '—'
-          binsByFgLocal[k][bin] = (binsByFgLocal[k][bin] || 0) + 1
+        binsByFgLocal = await fetchBinsForPrint(supabase, fgNames, {
+          chunkSize: 50,
+          pageSize: 1000
         })
-      // convert to array-of-objects like the UI expects
-      Object.entries(binsByFgLocal).forEach(([k, bins]) => {
-        binsByFgLocal[k] = Object.entries(bins).map(([bin_code, qty]) => ({ bin_code, qty }))
-      })
-      // ======== end safer fetch ========
+      } catch (fetchErr) {
+        console.error('printSO: Failed to fetch bins', fetchErr)
+        // Continue with empty bins rather than failing entirely
+      }
+      // ======== end chunked fetch ========
 
       const byBrand = {}
       for (const l of rows) {

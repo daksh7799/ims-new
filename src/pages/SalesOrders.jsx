@@ -6,37 +6,9 @@ import { downloadCSV } from '../utils/csv'
 import AsyncFGSelect from '../components/AsyncFGSelect.jsx'
 import { saveAs } from 'file-saver'
 import { useToast } from '../ui/toast.jsx'
+import { fetchBinsForPrint } from '../utils/binFetcher'
 
-function normalizeName(s) { return String(s || '').trim().toLowerCase() }
-
-async function getBinsForFgNames(names) {
-  if (!names.length) return {}
-  // OPTIMIZATION: Filter by names on server side
-  const { data: allBins, error } = await supabase
-    .from('v_bin_inventory')
-    .select('finished_good_name, bin_code, produced_at')
-    .in('finished_good_name', names)
-
-  if (error) { console.error('v_bin_inventory', error); return {} }
-
-  const out = {}
-  const wanted = new Set(names.map(normalizeName))
-    ; (allBins || []).forEach(r => {
-      const fgKey = normalizeName(r.finished_good_name)
-      if (!wanted.has(fgKey)) return
-      if (!out[fgKey]) out[fgKey] = {}
-      const bin = r.bin_code || '—'
-      if (!out[fgKey][bin]) out[fgKey][bin] = { qty: 0 }
-      out[fgKey][bin].qty += 1
-    })
-  const agg = {}
-  Object.entries(out).forEach(([fgKey, bins]) => {
-    agg[fgKey] = Object.entries(bins).map(([bin_code, v]) => ({
-      bin_code, qty: v.qty
-    }))
-  })
-  return agg
-}
+const normalizeName = s => String(s ?? '').trim().toLowerCase()
 
 function extractBrand(fgName) {
   if (!fgName) return 'UNKNOWN'
@@ -373,7 +345,18 @@ export default function SalesOrders() {
       if (!rows.length) { push('No lines to print', 'warn'); return }
 
       const fgNames = rows.map(l => l.finished_good_name).filter(Boolean)
-      const binsByFg = await getBinsForFgNames(fgNames)
+
+      // Fetch bins using chunked utility
+      let binsByFg = {}
+      try {
+        binsByFg = await fetchBinsForPrint(supabase, fgNames, {
+          chunkSize: 50,
+          pageSize: 1000
+        })
+      } catch (err) {
+        console.error('printSO: Failed to fetch bins', err)
+        // Continue with empty bins rather than failing
+      }
 
       // group by brand
       const byBrand = {}

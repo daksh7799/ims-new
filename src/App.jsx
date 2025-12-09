@@ -38,6 +38,7 @@ import RawInwardReport from './pages/RawInwardReport.jsx'
 import DailyStockReport from './pages/DailyStockReport.jsx';
 import SKUMappings from './pages/SKUMappings.jsx' // 👈 SKU Mapping System
 import RawConsumed from './pages/RawConsumed.jsx' // 👈 NEW MODULE
+import ManufacturingOrders from './pages/ManufacturingOrders.jsx' // 👈 MO System
 
 
 // Stock check UI (route only; not in sidebar)
@@ -79,6 +80,7 @@ const LINKS = [
   { key: 'admin', path: '/admin', label: 'Admin' },
   { key: 'sku-mappings', path: '/sku-mappings', label: 'SKU Mappings' },
   { key: 'raw-consumed', path: '/raw-consumed', label: 'Raw Consumed' }, // 👈 NEW MODULE
+  { key: 'mo-admin', path: '/mo-admin', label: 'Pending Production' }, // 👈 NEW MODULE
 
 ]
 
@@ -167,6 +169,7 @@ export default function App() {
             {canSee('bill-check') && <Route path="/bill-check" element={<BillCheck />} />}
             {canSee('sku-mappings') && <Route path="/sku-mappings" element={<SKUMappings />} />}
             {canSee('raw-consumed') && <Route path="/raw-consumed" element={<RawConsumed />} />}
+            {canSee('mo-admin') && <Route path="/mo-admin" element={<ManufacturingOrders />} />}
 
             {/* Keep DailyStockCheck as a route if you want direct access (optional).
                 It's not included in the sidebar links above, so it won't show there.
