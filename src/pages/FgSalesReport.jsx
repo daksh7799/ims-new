@@ -1,9 +1,20 @@
-import { useState, useEffect, useMemo } from "react";
+import { useState, useEffect, useMemo, useCallback } from "react";
 import { format, subDays, eachDayOfInterval } from "date-fns";
 import { DayPicker } from "react-day-picker";
 import "react-day-picker/dist/style.css";
 import { supabase } from "../supabaseClient";
 import { saveAs } from "file-saver";
+
+const PAGE_SIZE = 500;
+const SERVER_PAGE_SIZE = 1000; // must be <= Supabase max_rows
+
+const QUICK_FILTERS = [
+  { label: "Today", days: 0 },
+  { label: "3 Days", days: 3 },
+  { label: "7 Days", days: 7 },
+  { label: "15 Days", days: 15 },
+  { label: "30 Days", days: 30 },
+];
 
 export default function FgSalesReport() {
   const [range, setRange] = useState({ from: new Date(), to: new Date() });
@@ -12,27 +23,29 @@ export default function FgSalesReport() {
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState("");
   const [page, setPage] = useState(1);
-  const pageSize = 1000;
+  const [qtySortDirection, setQtySortDirection] = useState("none"); // 'none' | 'asc' | 'desc'
 
-  /** ─── Quick Filters ─── */
-  const quickFilters = [
-    { label: "Today", days: 0 },
-    { label: "3 Days", days: 3 },
-    { label: "7 Days", days: 7 },
-    { label: "15 Days", days: 15 },
-    { label: "30 Days", days: 30 },
-  ];
+  /** ─── Helpers ─── */
 
-  function setQuickFilter(days) {
+  const setQuickFilter = (days) => {
     const end = new Date();
     const start = days > 0 ? subDays(end, days - 1) : end;
     const rangeDays = eachDayOfInterval({ start, end });
     setRange({ from: start, to: end });
     setSelectedDays(rangeDays);
-  }
+  };
 
-  /** ─── Load Data ─── */
-  async function load(selectedDates) {
+  const toggleQtySort = () => {
+    setPage(1);
+    setQtySortDirection((prev) =>
+      prev === "none" ? "asc" : prev === "asc" ? "desc" : "none"
+    );
+  };
+
+  const qtySortIcon = qtySortDirection === "asc" ? "▲" : qtySortDirection === "desc" ? "▼" : "↕";
+
+  /** ─── Load Data (fetch ALL chunks from Supabase) ─── */
+  const load = useCallback(async (selectedDates) => {
     try {
       setLoading(true);
       setError("");
@@ -43,20 +56,37 @@ export default function FgSalesReport() {
       }
 
       const dates = selectedDates.map((d) => format(d, "yyyy-MM-dd"));
-      const { data, error } = await supabase.rpc("get_fg_sales_by_dates", {
-        p_dates: dates,
-      });
-      if (error) throw error;
 
-      const sorted = (data || [])
-        .map((r) => ({
-          finished_good_name: r.finished_good_name,
-          qty_shipped: Number(r.total_qty || 0),
-        }))
-        .sort((a, b) => a.finished_good_name.localeCompare(b.finished_good_name));
+      let allData = [];
+      let from = 0;
 
-      setRows(sorted);
+      // fetch in chunks until we get less than SERVER_PAGE_SIZE
+      while (true) {
+        const to = from + SERVER_PAGE_SIZE - 1;
+
+        const { data, error } = await supabase
+          .rpc("get_fg_sales_by_dates", { p_dates: dates })
+          .range(from, to);
+
+        if (error) throw error;
+
+        const chunk = data || [];
+        if (!chunk.length) break;
+
+        allData = allData.concat(chunk);
+        if (chunk.length < SERVER_PAGE_SIZE) break;
+
+        from += SERVER_PAGE_SIZE;
+      }
+
+      const mapped = allData.map((r) => ({
+        finished_good_name: r.finished_good_name,
+        qty_shipped: Number(r.total_qty || 0),
+      }));
+
+      setRows(mapped);
       setPage(1);
+      setQtySortDirection("none"); // reset sort when date range changes
     } catch (err) {
       console.error("load", err);
       setError(err.message || "Error loading data");
@@ -64,37 +94,57 @@ export default function FgSalesReport() {
     } finally {
       setLoading(false);
     }
-  }
+  }, []);
 
   /** ─── Auto load on date change ─── */
   useEffect(() => {
-    if (selectedDays.length > 0) load(selectedDays);
-  }, [selectedDays]);
+    if (selectedDays.length > 0) {
+      load(selectedDays);
+    }
+  }, [selectedDays, load]);
 
-  useEffect(() => {
-    load(selectedDays);
-  }, []);
+  /** ─── Sorted rows (global) ─── */
+  const sortedRows = useMemo(() => {
+    if (!rows.length) return [];
+
+    const arr = [...rows];
+
+    if (qtySortDirection === "asc") {
+      arr.sort((a, b) => a.qty_shipped - b.qty_shipped);
+    } else if (qtySortDirection === "desc") {
+      arr.sort((a, b) => b.qty_shipped - a.qty_shipped);
+    } else {
+      arr.sort((a, b) =>
+        (a.finished_good_name || "").localeCompare(b.finished_good_name || "")
+      );
+    }
+
+    return arr;
+  }, [rows, qtySortDirection]);
 
   /** ─── Totals & Pagination ─── */
   const totalQtyAll = useMemo(
-    () => rows.reduce((sum, r) => sum + Number(r.qty_shipped || 0), 0),
-    [rows]
+    () => sortedRows.reduce((sum, r) => sum + (r.qty_shipped || 0), 0),
+    [sortedRows]
   );
-  const totalPages = Math.max(1, Math.ceil(rows.length / pageSize));
-  const pagedRows = rows.slice((page - 1) * pageSize, page * pageSize);
 
-  /** ─── Export CSV ─── */
-  function exportCSV() {
-    if (!rows.length) return;
+  const totalPages = Math.max(1, Math.ceil(sortedRows.length / PAGE_SIZE));
+  const pagedRows = sortedRows.slice((page - 1) * PAGE_SIZE, page * PAGE_SIZE);
+
+  /** ─── Export CSV (all sorted rows) ─── */
+  const exportCSV = () => {
+    if (!sortedRows.length) return;
     const header = "Finished Good,Qty Shipped\n";
-    const body = rows.map((r) => `${r.finished_good_name},${r.qty_shipped}`).join("\n");
+    const body = sortedRows
+      .map((r) => `${r.finished_good_name},${r.qty_shipped}`)
+      .join("\n");
     const blob = new Blob([header + body], { type: "text/csv;charset=utf-8" });
     saveAs(blob, "fg_sales_report.csv");
-  }
+  };
 
-  /** ─── Print PDF ─── */
-  async function printPDF() {
-    if (!rows.length) return alert("No data to print.");
+  /** ─── Print PDF (all sorted rows) ─── */
+  const printPDF = async () => {
+    if (!sortedRows.length) return alert("No data to print.");
 
     try {
       const [{ default: jsPDF }, { default: autoTable }] = await Promise.all([
@@ -108,16 +158,23 @@ export default function FgSalesReport() {
       const startDate = selectedDays[0]
         ? format(selectedDays[0], "dd-MMM-yyyy")
         : "—";
-      const endDate =
-        selectedDays[selectedDays.length - 1]
-          ? format(selectedDays[selectedDays.length - 1], "dd-MMM-yyyy")
-          : startDate;
+      const endDate = selectedDays[selectedDays.length - 1]
+        ? format(selectedDays[selectedDays.length - 1], "dd-MMM-yyyy")
+        : startDate;
 
-      doc.text(`Finished Goods Sales Report — ${startDate} to ${endDate}`, 14, 16);
+      doc.text(
+        `Finished Goods Sales Report — ${startDate} to ${endDate}`,
+        14,
+        16
+      );
       doc.setFontSize(11);
-      doc.text(`Total Qty: ${totalQtyAll} | Records: ${rows.length}`, 14, 22);
+      doc.text(
+        `Total Qty: ${totalQtyAll} | Records: ${sortedRows.length}`,
+        14,
+        22
+      );
 
-      const body = rows.map((r) => [
+      const body = sortedRows.map((r) => [
         r.finished_good_name || "—",
         r.qty_shipped?.toLocaleString() || "0",
       ]);
@@ -148,7 +205,7 @@ export default function FgSalesReport() {
     } catch (err) {
       alert("Failed to print: " + (err?.message || String(err)));
     }
-  }
+  };
 
   return (
     <div className="grid" style={{ gap: 16 }}>
@@ -156,13 +213,13 @@ export default function FgSalesReport() {
         <div className="hd row space-between">
           <b>Finished Goods Sales Report</b>
           <span style={{ fontSize: 13, color: "gray" }}>
-            {rows.length
-              ? `Total Qty: ${totalQtyAll} | Records: ${rows.length}`
+            {sortedRows.length
+              ? `Total Qty: ${totalQtyAll} | Records: ${sortedRows.length}`
               : "Select dates to view report"}
           </span>
         </div>
 
-        {/* FILTER BAR (moved buttons here) */}
+        {/* FILTER BAR */}
         <div
           className="row flex-wrap"
           style={{
@@ -173,7 +230,7 @@ export default function FgSalesReport() {
           }}
         >
           <div className="row" style={{ gap: 8, flexWrap: "wrap" }}>
-            {quickFilters.map((f) => (
+            {QUICK_FILTERS.map((f) => (
               <button
                 key={f.days}
                 className="btn small outline"
@@ -185,10 +242,18 @@ export default function FgSalesReport() {
           </div>
 
           <div className="row" style={{ gap: 8, flexWrap: "wrap" }}>
-            <button className="btn outline" onClick={exportCSV} disabled={!rows.length}>
+            <button
+              className="btn outline"
+              onClick={exportCSV}
+              disabled={!sortedRows.length}
+            >
               ⬇️ Export CSV
             </button>
-            <button className="btn" onClick={printPDF} disabled={!rows.length}>
+            <button
+              className="btn"
+              onClick={printPDF}
+              disabled={!sortedRows.length}
+            >
               🖨️ Print
             </button>
           </div>
@@ -223,7 +288,10 @@ export default function FgSalesReport() {
               selected={range}
               onSelect={(r) => {
                 if (r?.from && r?.to) {
-                  const daysInRange = eachDayOfInterval({ start: r.from, end: r.to });
+                  const daysInRange = eachDayOfInterval({
+                    start: r.from,
+                    end: r.to,
+                  });
                   setRange(r);
                   setSelectedDays(daysInRange);
                 } else {
@@ -244,12 +312,24 @@ export default function FgSalesReport() {
       {/* TABLE */}
       <div className="card" id="printable-area">
         <div className="bd" style={{ overflow: "auto" }}>
-          {error && <div style={{ color: "var(--err)", marginBottom: 8 }}>{error}</div>}
+          {error && (
+            <div style={{ color: "var(--err)", marginBottom: 8 }}>{error}</div>
+          )}
           <table className="table" style={{ minWidth: 400 }}>
             <thead>
               <tr>
                 <th>Finished Good</th>
-                <th style={{ textAlign: "right" }}>Qty Shipped</th>
+                <th
+                  style={{
+                    textAlign: "right",
+                    cursor: "pointer",
+                    whiteSpace: "nowrap",
+                  }}
+                  onClick={toggleQtySort}
+                  title="Sort by Qty Shipped"
+                >
+                  Qty Shipped {qtySortIcon}
+                </th>
               </tr>
             </thead>
             <tbody>
@@ -260,8 +340,8 @@ export default function FgSalesReport() {
                   </td>
                 </tr>
               )}
-              {pagedRows.map((r, i) => (
-                <tr key={i}>
+              {pagedRows.map((r) => (
+                <tr key={r.finished_good_name}>
                   <td>{r.finished_good_name}</td>
                   <td style={{ textAlign: "right" }}>{r.qty_shipped}</td>
                 </tr>
@@ -271,7 +351,7 @@ export default function FgSalesReport() {
         </div>
 
         {/* PAGINATION */}
-        {rows.length > pageSize && (
+        {sortedRows.length > PAGE_SIZE && (
           <div className="ft row center" style={{ gap: 10, marginTop: 10 }}>
             <button
               className="btn outline small"
