@@ -132,7 +132,12 @@ export default function ManufacturePage() {
         // Reset to single empty line
         setManufacturingLines([{ id: Date.now(), fgId: "", fgName: "", qty: 1 }]);
       } else {
-        push("No packets were created", "warn");
+        // Only warn if we didn't error out earlier (which we would have if RPC failed)
+        // If we processed items but made 0 packets, that's a warning.
+        // If we had errors, they are already pushed.
+        if (batches.length === 0) {
+          // We don't need a generic "no packets" if we already showed specific errors
+        }
       }
     } catch (err) {
       push(err.message || String(err), "err");
