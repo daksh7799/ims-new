@@ -4,6 +4,8 @@ import Papa from "papaparse";
 import { saveAs } from "file-saver";
 import { useToast } from "../ui/toast.jsx";
 
+import { downloadCSV } from "../utils/csv";
+
 function normBin(s) {
   return (s || "").trim().toUpperCase();
 }
@@ -20,6 +22,7 @@ export default function Putaway() {
   const [unbinned, setUnbinned] = useState([]);
   const [loadingC, setLoadingC] = useState(false);
   const [loadingU, setLoadingU] = useState(false);
+  const [downloadingU, setDownloadingU] = useState(false);
   const [message, setMessage] = useState("");
 
   // Pagination for unbinned
@@ -102,6 +105,42 @@ export default function Putaway() {
       setUnbinned([]);
     } finally {
       setLoadingU(false);
+    }
+  }
+
+  async function downloadUnbinnedCSV() {
+    setDownloadingU(true);
+    try {
+      // iterate pages
+      const limit = 1000;
+      let from = 0;
+      let all = [];
+      while (true) {
+        const { data, error } = await supabase
+          .from("v_unbinned_live_packets")
+          .select("packet_code, finished_good_name, status, produced_at")
+          .order("produced_at", { ascending: false })
+          .range(from, from + limit - 1);
+
+        if (error) throw error;
+        if (!data?.length) break;
+        all.push(...data);
+        if (data.length < limit) break;
+        from += limit;
+      }
+
+      downloadCSV("unbinned_packets.csv", all.map(r => ({
+        "Packet Code": r.packet_code,
+        "Item": r.finished_good_name,
+        "Status": r.status,
+        "Produced At": r.produced_at ? new Date(r.produced_at).toLocaleString() : ''
+      })));
+
+    } catch (e) {
+      console.error(e);
+      push(e.message || String(e), "err");
+    } finally {
+      setDownloadingU(false);
     }
   }
 
@@ -482,6 +521,13 @@ export default function Putaway() {
         <div className="hd">
           <b>Unbinned Live Packets</b>
           <div className="row" style={{ gap: 8 }}>
+            <button
+              className="btn small"
+              onClick={downloadUnbinnedCSV}
+              disabled={downloadingU}
+            >
+              {downloadingU ? "Downloading..." : "Download CSV"}
+            </button>
             <button
               className="btn small outline"
               disabled={page === 0}
