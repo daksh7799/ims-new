@@ -12,6 +12,7 @@ function fmt(d) {
 export default function BinInventory() {
   const [rows, setRows] = useState([])
   const [bins, setBins] = useState([])
+  const [salesMap, setSalesMap] = useState({})
   const [q, setQ] = useState('')
   const [binFilter, setBinFilter] = useState('')
   const [loading, setLoading] = useState(true)
@@ -31,8 +32,8 @@ export default function BinInventory() {
         const { data, error } = await supabase
           .from('v_bin_inventory')
           .select('bin_code, packet_code, finished_good_name, status, produced_at, added_at')
+          .order('produced_at', { ascending: true })
           .order('bin_code', { ascending: true })
-          .order('added_at', { ascending: false })
           .range(from, to)
         if (error) throw error
         if (!data?.length) break
@@ -41,6 +42,26 @@ export default function BinInventory() {
         from += limit
         to += limit
       }
+
+      // Fetch sales velocity using the Dashboard RPC
+      // This is more reliable as it encapsulates the correct logic for "sales"
+      const { data: sold, error: soldErr } = await supabase.rpc('dash_top_products', {
+        p_days: 3,
+        p_limit: 5000
+      })
+
+      if (soldErr) console.error('Error fetching sales velocity:', soldErr)
+
+      const sMap = {}
+      if (sold && sold.length > 0) {
+        for (const s of sold) {
+          // RPC returns { finished_good_name, units }
+          if (s.finished_good_name) {
+            sMap[s.finished_good_name] = Number(s.units || 0)
+          }
+        }
+      }
+      setSalesMap(sMap)
 
       // Extract unique bin codes from the data
       const uniqueBins = [...new Set(all.map(r => r.bin_code).filter(Boolean))].sort()
@@ -141,24 +162,44 @@ export default function BinInventory() {
                 <th>Barcode</th>
                 <th>Item</th>
                 <th>Status</th>
+                <th>Age</th>
+                <th>Alert</th>
+                <th>Sold (3d)</th>
                 <th>Produced</th>
                 <th>Added</th>
               </tr>
             </thead>
             <tbody>
-              {paged.map((r, i) => (
-                <tr key={`${r.packet_code}-${i}`}>
-                  <td><span className="badge">{r.bin_code}</span></td>
-                  <td style={{ fontFamily: 'monospace' }}>{r.packet_code}</td>
-                  <td>{r.finished_good_name}</td>
-                  <td><span className="badge">{r.status}</span></td>
-                  <td>{fmt(r.produced_at)}</td>
-                  <td>{fmt(r.added_at)}</td>
-                </tr>
-              ))}
+              {paged.map((r, i) => {
+                const ageDays = r.produced_at
+                  ? Math.floor((new Date() - new Date(r.produced_at)) / (86400000))
+                  : null
+                const soldQty = salesMap[r.finished_good_name] || 0
+                const isOld = ageDays && ageDays > 60
+
+                return (
+                  <tr key={`${r.packet_code}-${i}`} style={{ background: isOld ? '#fff1f0' : undefined }}>
+                    <td><span className="badge">{r.bin_code}</span></td>
+                    <td style={{ fontFamily: 'monospace' }}>{r.packet_code}</td>
+                    <td>{r.finished_good_name}</td>
+                    <td><span className="badge">{r.status}</span></td>
+                    <td>{ageDays !== null ? `${ageDays} days` : '—'}</td>
+                    <td>
+                      {isOld && (
+                        <span className="badge err" title="Old stock (> 60 days)">
+                          ⚠️ Old Stock
+                        </span>
+                      )}
+                    </td>
+                    <td>{soldQty > 0 ? <span className="badge" style={{ borderColor: 'var(--ok)' }}>{soldQty}</span> : '—'}</td>
+                    <td>{fmt(r.produced_at)}</td>
+                    <td>{fmt(r.added_at)}</td>
+                  </tr>
+                )
+              })}
               {paged.length === 0 && (
                 <tr>
-                  <td colSpan="6" style={{ color: 'var(--muted)' }}>
+                  <td colSpan="9" style={{ color: 'var(--muted)' }}>
                     {loading ? 'Loading…' : 'No packets in bins'}
                   </td>
                 </tr>
