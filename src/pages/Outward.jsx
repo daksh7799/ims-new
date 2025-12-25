@@ -141,6 +141,15 @@ export default function Outward() {
         return
       }
 
+      // Block packets > 60 days
+      const ageDays = pktInfo.produced_at
+        ? Math.floor((new Date() - new Date(pktInfo.produced_at)) / (86400000))
+        : 0
+      if (ageDays > 60) {
+        window.alert(`🚫 Packet "${pkt}" is too old (${ageDays} days). Limit is 60 days.\nPlease scrap this packet.`)
+        return
+      }
+
       // only block scrapped; reuse is decided by backend
       if ((pktInfo.status || '').toLowerCase() === 'scrapped') {
         window.alert(`🚫 Packet "${pkt}" is scrapped and cannot be outwarded.`)
