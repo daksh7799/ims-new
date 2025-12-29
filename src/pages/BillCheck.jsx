@@ -58,6 +58,7 @@ export default function BillCheck() {
     return `${day}-${months[parseInt(month) - 1]}-${year.slice(-2)}`;
   }
 
+  // ------------ LOAD BILLS ------------
   async function loadBills() {
     setLoading(true);
     try {
@@ -119,6 +120,7 @@ export default function BillCheck() {
     return true;
   });
 
+  // ------------ OPEN BILL ------------
   async function openBill(bill) {
     setLoading(true);
     try {
@@ -212,6 +214,7 @@ export default function BillCheck() {
     );
   }
 
+  // ------------ CALC ------------
   const calculated = useMemo(() => {
     let totals = { taxable: 0, sgst: 0, cgst: 0, igst: 0, qty: 0 };
 
@@ -265,13 +268,10 @@ export default function BillCheck() {
     Number(billMeta.kanta_tulai_amt) +
     Number(billMeta.round_off_amt);
 
-  //
-  // ⭐⭐⭐ IMPORTANT FIX — RATES ACTUALLY SAVE NOW ⭐⭐⭐
-  //
+  // ------------ SAVE (FIXED) ------------
   async function save(check = false) {
     setLoading(true);
     try {
-      // update each raw_inward row by ID
       await Promise.all(
         billDetails.map((l) =>
           supabase
@@ -308,6 +308,7 @@ export default function BillCheck() {
     }
   }
 
+  // ------------ DOWNLOAD ------------
   async function downloadSelected() {
     if (checkedSelection.size === 0) return;
 
@@ -371,8 +372,6 @@ export default function BillCheck() {
           const isFirst = index === 0;
 
           const roundVal = Number(meta.round_off_amt);
-          const roundAmt = isLast ? Math.abs(roundVal).toFixed(2) : "";
-          const roundDrCr = isLast ? (roundVal < 0 ? "Cr" : "Dr") : "";
 
           allRows.push({
             "Invoice Date": formatDate(bill.purchase_date),
@@ -381,19 +380,42 @@ export default function BillCheck() {
             "Supplier Invoice Date": formatDate(bill.purchase_date),
             "Voucher Type": "Purchase",
             "Purchase Ledger": "01-Purchase Grocery",
+
             "Supplier Name": isFirst ? vendor.name : "",
+            "Address 1": isFirst ? (vendor.address_1 || "") : "",
+            "State": isFirst ? (vendor.state || "") : "",
+            "Country": isFirst ? (vendor.country || "India") : "",
+            "GSTIN/UIN": isFirst ? (vendor.gstin || "") : "",
+            "GST Registration Type": isFirst ? (vendor.gst_reg_type || "Regular") : "",
+            "Place of Suppy": isFirst ? (vendor.state || "") : "",
+
             "Item Name":
               line.raw_materials?.accounting_name ||
               line.raw_materials?.name,
             QTY: line.qty,
             "Item Rate": line.rate,
             Amount: (line.amount * -1).toFixed(2),
+
+            "Kanta Tulai Ledger": isLast ? "Kanta Tulai" : "",
             "Kanta Tulai Amt": isLast ? meta.kanta_tulai_amt : "",
+
+            "SGST Ledger": isLast ? "Input SGST" : "",
             "SGST Amount": isLast ? Number(meta.sgst_amt).toFixed(2) : "",
+
+            "CGST Ledger": isLast ? "Input CGST" : "",
             "CGST Amount": isLast ? Number(meta.cgst_amt).toFixed(2) : "",
+
+            "IGST Ledger": isLast ? "Input IGST" : "",
             "IGST Amount": isLast ? Number(meta.igst_amt).toFixed(2) : "",
-            "Round OFF Amt": roundAmt,
-            "Round OFF Amt dr/cr": roundDrCr,
+
+            "Round OFF Ledger": isLast ? "Round Off" : "",
+            "Round OFF Amt": isLast
+              ? Math.abs(roundVal).toFixed(2)
+              : "",
+            "Round OFF Amt dr/cr": isLast
+              ? (roundVal < 0 ? "Cr" : "Dr")
+              : "",
+
             "Invoice Amount": isLast ? grand.toFixed(2) : "",
           });
         });
@@ -424,6 +446,7 @@ export default function BillCheck() {
     }
   }
 
+  // ------------ RENDER ------------
   if (selectedBill) {
     return (
       <div className="card">
@@ -570,6 +593,7 @@ export default function BillCheck() {
     );
   }
 
+  // ------------ LIST MODE ------------
   return (
     <div className="grid">
       <div className="card">
