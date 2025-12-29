@@ -7,17 +7,14 @@ export default function BillCheck() {
   const { push } = useToast();
   const [loading, setLoading] = useState(false);
 
-  // Data
   const [allBills, setAllBills] = useState([]);
   const [selectedBill, setSelectedBill] = useState(null);
 
-  // Tabs & filters
   const [tab, setTab] = useState("pending");
   const [showUploaded, setShowUploaded] = useState(false);
   const [checkedSelection, setCheckedSelection] = useState(new Set());
   const [searchQuery, setSearchQuery] = useState("");
 
-  // Bill data
   const [billDetails, setBillDetails] = useState([]);
   const [vendorDetails, setVendorDetails] = useState(null);
 
@@ -30,7 +27,6 @@ export default function BillCheck() {
     is_checked: false,
   });
 
-  // ================= HELPERS =================
   const isRajasthan = useMemo(
     () => vendorDetails?.state?.toLowerCase().includes("rajasthan") ?? false,
     [vendorDetails?.state]
@@ -62,7 +58,6 @@ export default function BillCheck() {
     return `${day}-${months[parseInt(month) - 1]}-${year.slice(-2)}`;
   }
 
-  // ================= LOAD BILLS =================
   async function loadBills() {
     setLoading(true);
     try {
@@ -124,7 +119,6 @@ export default function BillCheck() {
     return true;
   });
 
-  // ================= OPEN BILL =================
   async function openBill(bill) {
     setLoading(true);
     try {
@@ -155,8 +149,6 @@ export default function BillCheck() {
       const meta = metaRes.data;
       const vendor = vendorRes.data;
 
-      // ** FIXED **
-      // Get latest VALID rate (not null, not 0)
       const materialIds = lines.map((l) => l.raw_material_id);
 
       const { data: historyRates } = await supabase
@@ -220,7 +212,6 @@ export default function BillCheck() {
     );
   }
 
-  // ================= CALCULATION =================
   const calculated = useMemo(() => {
     let totals = { taxable: 0, sgst: 0, cgst: 0, igst: 0, qty: 0 };
 
@@ -250,7 +241,6 @@ export default function BillCheck() {
     };
   }, [billDetails, isRajasthan]);
 
-  // Always sync totals with calculated values
   useEffect(() => {
     if (!selectedBill) return;
 
@@ -275,15 +265,22 @@ export default function BillCheck() {
     Number(billMeta.kanta_tulai_amt) +
     Number(billMeta.round_off_amt);
 
-  // ================= SAVE =================
+  //
+  // ⭐⭐⭐ IMPORTANT FIX — RATES ACTUALLY SAVE NOW ⭐⭐⭐
+  //
   async function save(check = false) {
     setLoading(true);
     try {
-      await supabase.from("raw_inward").upsert(
-        billDetails.map((l) => ({
-          id: l.id,
-          rate: l.rate || null,
-        }))
+      // update each raw_inward row by ID
+      await Promise.all(
+        billDetails.map((l) =>
+          supabase
+            .from("raw_inward")
+            .update({
+              rate: Number(l.rate) || 0,
+            })
+            .eq("id", l.id)
+        )
       );
 
       const payload = {
@@ -311,7 +308,6 @@ export default function BillCheck() {
     }
   }
 
-  // ================= DOWNLOAD SELECTED =================
   async function downloadSelected() {
     if (checkedSelection.size === 0) return;
 
@@ -350,9 +346,14 @@ export default function BillCheck() {
         const processed = lines.map((l) => {
           const qty = Number(l.qty) || 0;
           const rate = Number(l.rate) || 0;
-          const gstRate = Number(l.raw_materials?.gst_rate ?? 5);
 
-          const t = calcTax({ qty, rate, gstRate, isRajasthan });
+          const t = calcTax({
+            qty,
+            rate,
+            gstRate: Number(l.raw_materials?.gst_rate ?? 5),
+            isRajasthan,
+          });
+
           totalTaxable += t.amount;
           return { ...l, ...t };
         });
@@ -423,7 +424,6 @@ export default function BillCheck() {
     }
   }
 
-  // ================= RENDER =================
   if (selectedBill) {
     return (
       <div className="card">
@@ -570,7 +570,6 @@ export default function BillCheck() {
     );
   }
 
-  // ================= LIST MODE =================
   return (
     <div className="grid">
       <div className="card">
