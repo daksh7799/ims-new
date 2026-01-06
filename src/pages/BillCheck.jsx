@@ -1,7 +1,7 @@
 import { useEffect, useState, useMemo } from "react";
 import { supabase } from "../supabaseClient";
 import { useToast } from "../ui/toast";
-import * as XLSX from "xlsx";
+// import * as XLSX from "xlsx"; // Lazy loaded now
 
 export default function BillCheck() {
     const { push } = useToast();
@@ -421,6 +421,7 @@ export default function BillCheck() {
                 });
             }
 
+            const XLSX = await import("xlsx");
             const ws = XLSX.utils.json_to_sheet(allRows);
             const wb = XLSX.utils.book_new();
             XLSX.utils.book_append_sheet(wb, ws, "Bills");
@@ -752,3 +753,4 @@ export default function BillCheck() {
         </div>
     );
 }
+
