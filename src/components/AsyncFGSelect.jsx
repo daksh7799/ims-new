@@ -1,169 +1,192 @@
 // src/components/AsyncFGSelect.jsx
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useState, useRef } from "react";
 import { supabase } from "../supabaseClient";
 import useDebouncedValue from "../hooks/useDebouncedValue";
 
+/**
+ * Async Combobox for Finished Goods.
+ * Props:
+ *  - value: selected finished_good id (string|number)
+ *  - onChange: (id, item) => void
+ *  - placeholder: string
+ *  - minChars: number (default 0)
+ *  - pageSize: number (default 25)
+ *  - preselectedName: string (optional)
+ *  - disabled: boolean
+ */
 export default function AsyncFGSelect({
-  value,
-  onChange,
+  value = "",
+  onChange = () => { },
   placeholder = "Type to search finished goods…",
-  minChars = 1,
+  minChars = 0,
   pageSize = 25,
+  preselectedName = "",
   disabled = false,
 }) {
-  const [input, setInput] = useState("");
-  const q = useDebouncedValue(input, 250);
-  const [items, setItems] = useState([]);  // {id,name,code_prefix}
+  const [display, setDisplay] = useState(preselectedName);
+  const [items, setItems] = useState([]);
   const [loading, setLoading] = useState(false);
   const [open, setOpen] = useState(false);
-  const [page, setPage] = useState(1);
-  const listRef = useRef(null);
-  const [selected, setSelected] = useState(null);
 
+  // Search query
+  const [query, setQuery] = useState("");
+  const debouncedQuery = useDebouncedValue(query, 300);
+
+  const wrapperRef = useRef(null);
+
+  // Close on click outside
   useEffect(() => {
-    async function fetchSelectedOnce() {
-      if (!value) { setSelected(null); return; }
-      const { data, error } = await supabase
-        .from("finished_goods")
-        .select("id,name,code_prefix")
-        .eq("id", value)
-        .limit(1);
-      if (!error && data && data[0]) setSelected(data[0]);
-    }
-    fetchSelectedOnce();
-  }, [value]);
-
-  async function search(pageArg = 1, append = false) {
-    if (q.length < minChars) { setItems([]); setPage(1); return; }
-    setLoading(true);
-    const from = (pageArg - 1) * pageSize;
-    const to = from + pageSize - 1;
-
-    const { data, error } = await supabase
-      .from("finished_goods")
-      .select("id,name,code_prefix")
-      .eq("is_active", true)
-      .ilike("name", `%${q}%`)
-      .order("name", { ascending: true })
-      .range(from, to);
-
-    setLoading(false);
-    if (error) return console.error(error);
-    setItems((prev) => (append ? [...prev, ...(data || [])] : (data || [])));
-    setPage(pageArg);
-    setOpen(true);
-  }
-
-  useEffect(() => {
-    if (q.length >= minChars) search(1, false);
-    else { setItems([]); setOpen(false); }
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [q]);
-
-  function pick(it) {
-    setSelected(it);
-    setOpen(false);
-    setInput("");
-    onChange?.(it.id, it);
-  }
-
-  function onKey(e) {
-    if (!open || !items.length) return;
-    const el = listRef.current; if (!el) return;
-    const current = el.querySelector(".active");
-    if (e.key === "ArrowDown") {
-      e.preventDefault();
-      const next = current ? current.nextElementSibling : el.firstChild;
-      next?.scrollIntoView({ block: "nearest" });
-      el.querySelectorAll("li").forEach(li => li.classList.remove("active"));
-      next?.classList.add("active");
-    } else if (e.key === "ArrowUp") {
-      e.preventDefault();
-      const prev = current ? current.previousElementSibling : el.lastChild;
-      prev?.scrollIntoView({ block: "nearest" });
-      el.querySelectorAll("li").forEach(li => li.classList.remove("active"));
-      prev?.classList.add("active");
-    } else if (e.key === "Enter") {
-      e.preventDefault();
-      const target = current || el.firstChild;
-      if (target?.dataset?.id) {
-        const it = items.find(x => String(x.id) === target.dataset.id);
-        if (it) pick(it);
+    function handleClickOutside(event) {
+      if (wrapperRef.current && !wrapperRef.current.contains(event.target)) {
+        setOpen(false);
       }
-    } else if (e.key === "Escape") {
-      setOpen(false);
     }
-  }
+    document.addEventListener("mousedown", handleClickOutside);
+    return () => document.removeEventListener("mousedown", handleClickOutside);
+  }, []);
 
-  async function loadMore() { await search(page + 1, true); }
+  // Fetch items when debounced query changes
+  useEffect(() => {
+    if (debouncedQuery.trim().length < minChars) {
+      setItems([]);
+      return;
+    }
+
+    let cancelled = false;
+
+    async function fetchItems() {
+      setLoading(true);
+      try {
+        let q = supabase
+          .from("finished_goods")
+          .select("id,name,code_prefix")
+          .eq("is_active", true)
+          .order("name")
+          .limit(pageSize);
+
+        if (debouncedQuery.trim()) {
+          q = q.ilike("name", `%${debouncedQuery.trim()}%`);
+        }
+
+        const { data, error } = await q;
+        if (!cancelled) {
+          if (error) {
+            console.error(error);
+            setItems([]);
+          } else {
+            setItems(data || []);
+          }
+        }
+      } finally {
+        if (!cancelled) setLoading(false);
+      }
+    }
+
+    if (open) {
+      fetchItems();
+    }
+  }, [debouncedQuery, minChars, pageSize, open]);
+
+  // Sync display if external value changes
+  useEffect(() => {
+    if (!value) {
+      setDisplay("");
+    } else if (preselectedName && display !== preselectedName && !open) {
+      setDisplay(preselectedName);
+    } else if (value && !display && !open) {
+      // If we have a value but no display name, we might want to fetch it
+      // This is a fallback if preselectedName isn't provided
+      (async () => {
+        const { data } = await supabase.from('finished_goods').select('name').eq('id', value).single();
+        if (data) setDisplay(data.name);
+      })();
+    }
+  }, [value, preselectedName]);
+
+  function handleSelect(item) {
+    setDisplay(item.name);
+    onChange(item.id, item);
+    setOpen(false);
+    setQuery("");
+  }
 
   return (
-    <div style={{ position: "relative", minWidth: 320 }}>
-      {selected ? (
-        <div className="row" style={{ marginBottom: 6, gap: 6, flexWrap: "wrap" }}>
-          <span className="badge">
-            {selected.name}{selected.code_prefix ? ` • Prefix: ${selected.code_prefix}` : ""}
-          </span>
-          <button className="btn ghost small" onClick={() => { setSelected(null); onChange?.("", null); }}>
-            Clear
-          </button>
-        </div>
-      ) : null}
-
+    <div ref={wrapperRef} style={{ position: "relative", width: "100%", minWidth: 220 }}>
       <input
+        type="text"
         placeholder={placeholder}
-        value={input}
-        onChange={e => setInput(e.target.value)}
-        onFocus={() => q.length >= minChars && setOpen(true)}
-        onKeyDown={onKey}
+        value={open ? query : display}
+        onChange={(e) => {
+          setQuery(e.target.value);
+          if (!open) {
+            setOpen(true);
+          }
+        }}
+        onFocus={() => {
+          if (!disabled) {
+            // Only clear query, don't open yet. Opens on click or typing.
+            setQuery("");
+          }
+        }}
+        onClick={() => {
+          if (!disabled) {
+            setOpen(true);
+            setQuery("");
+          }
+        }}
         disabled={disabled}
+        style={{ width: "100%" }}
       />
 
       {open && (
         <div
           style={{
-            position: "absolute", zIndex: 50, left: 0, right: 0, top: "calc(100% + 6px)",
-            background: "var(--surface)", border: "1px solid var(--border)", borderRadius: 10,
-            maxHeight: 260, overflow: "auto", boxShadow: "var(--shadow-1)",
+            position: "absolute",
+            top: "100%",
+            left: 0,
+            right: 0,
+            zIndex: 100,
+            background: "var(--surface)",
+            border: "1px solid var(--border)",
+            borderRadius: 6,
+            boxShadow: "var(--shadow-2)",
+            maxHeight: 200,
+            overflowY: "auto",
+            marginTop: 4,
           }}
         >
-          <ul ref={listRef} style={{ listStyle: "none", margin: 0, padding: 6 }}>
-            {loading && items.length === 0 && (
-              <li className="s" style={{ padding: "8px 10px" }}>Searching…</li>
-            )}
-            {!loading && items.length === 0 && (
-              <li className="s" style={{ padding: "8px 10px" }}>
-                {q.length < minChars ? `Type at least ${minChars} character` : "No results"}
-              </li>
-            )}
-            {items.map(it => (
-              <li
-                key={it.id}
-                data-id={String(it.id)}
-                onMouseDown={() => pick(it)}
-                style={{ padding: "8px 10px", borderRadius: 8, cursor: "pointer" }}
-                onMouseEnter={(e) => {
-                  listRef.current?.querySelectorAll("li").forEach(li => li.classList.remove("active"));
-                  e.currentTarget.classList.add("active");
-                }}
-              >
-                <div style={{ display: "flex", justifyContent: "space-between", gap: 10 }}>
-                  <div>
-                    <div style={{ fontWeight: 600 }}>{it.name}</div>
-                    <div className="s">{it.code_prefix ? `Prefix: ${it.code_prefix}` : ""}</div>
-                  </div>
-                </div>
-              </li>
-            ))}
-          </ul>
+          {loading && <div style={{ padding: 8, color: "var(--muted)" }}>Loading...</div>}
 
-          {items.length > 0 && (
-            <div style={{ display: "flex", justifyContent: "center", borderTop: "1px dashed var(--border)" }}>
-              <button className="btn ghost small" onMouseDown={(e)=>e.preventDefault()} onClick={loadMore} disabled={loading}>
-                {loading ? "Loading…" : "Load more"}
-              </button>
-            </div>
+          {!loading && items.length === 0 && (
+            <div style={{ padding: 8, color: "var(--muted)" }}>No results found</div>
           )}
+
+          {!loading &&
+            items.map((item) => (
+              <div
+                key={item.id}
+                onMouseDown={(e) => {
+                  e.preventDefault();
+                  handleSelect(item);
+                }}
+                style={{
+                  padding: "8px 12px",
+                  cursor: "pointer",
+                  borderBottom: "1px solid var(--border-light)",
+                  display: "flex",
+                  justifyContent: "space-between",
+                }}
+                onMouseEnter={(e) => (e.currentTarget.style.background = "var(--bg-hover)")}
+                onMouseLeave={(e) => (e.currentTarget.style.background = "transparent")}
+              >
+                <span>{item.name}</span>
+                {item.code_prefix && (
+                  <span style={{ color: "var(--muted)", fontSize: "0.85em" }}>
+                    {item.code_prefix}
+                  </span>
+                )}
+              </div>
+            ))}
         </div>
       )}
     </div>
