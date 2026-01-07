@@ -154,6 +154,7 @@ export default function Consignment() {
             if (error) throw error
             setProcessedData(data || [])
             setTotalCount(count || 0)
+
         } catch (err) {
             push(err.message, 'err')
         } finally {
@@ -209,13 +210,19 @@ export default function Consignment() {
             const rows = XLSX.utils.sheet_to_json(wb.Sheets[wb.SheetNames[0]])
             if (rows.length === 0) throw new Error('Empty file')
 
-            const toInsert = rows.map(r => ({
-                sku: String(r['SKU'] || r['sku'] || ''),
-                item_id: String(r['ITEM ID'] || r['item id'] || ''),
-                title: String(r['TITLE'] || r['title'] || ''),
-                qty: parseInt(r['QTY'] || r['qty'] || 0),
-                state: String(r['STATE'] || r['state'] || '').trim()
-            }))
+            let totalFileQty = 0
+            const toInsert = rows.map(r => {
+                const sku = String(r['SKU'] || r['sku'] || '').trim()
+                const qty = Number(r['QTY'] || r['qty'] || 0)
+                totalFileQty += qty
+                return {
+                    sku,
+                    item_id: String(r['ITEM ID'] || r['item id'] || ''),
+                    title: String(r['TITLE'] || r['title'] || ''),
+                    qty,
+                    state: String(r['STATE'] || r['state'] || '').trim()
+                }
+            })
 
             await supabase.from('consignment_data').delete().neq('sku', 'DUMMY')
 
@@ -226,14 +233,15 @@ export default function Consignment() {
                 const { error } = await supabase.from('consignment_data').insert(chunk)
                 if (error) throw error
             }
-            push('Uploaded', 'ok'); setPage(0); loadData()
+            push(`Uploaded ${toInsert.length} rows (Total Qty: ${totalFileQty.toLocaleString()})`, 'ok')
+            setPage(0); loadData()
         } catch (err) { push(err.message, 'err') } finally { setLoading(false); setProgress(null); e.target.value = '' }
     }
 
     const handleExport = async () => {
         setLoading(true); setProgress({ current: 0, total: totalCount, label: 'Fetching...' })
         try {
-            let allData = [], offset = 0, FETCH = 5000, hasMore = true
+            let allData = [], offset = 0, FETCH = 1000, hasMore = true
             const isOverall = selectedWarehouse === 'OVERALL'
 
             while (hasMore) {
@@ -326,7 +334,10 @@ export default function Consignment() {
             ) : (
                 <div className="card">
                     <div className="hd" style={{ justifyContent: 'space-between' }}>
-                        <div className="row" style={{ gap: 12 }}><b>Split Preview</b> <span className="badge small outline">{totalCount} entries</span></div>
+                        <div className="row" style={{ gap: 12 }}>
+                            <b>Split Preview</b>
+                            <span className="badge small outline">{totalCount} entries</span>
+                        </div>
                         <div className="row" style={{ gap: 12 }}>
                             <select className="select small" value={selectedWarehouse} onChange={e => { setSelectedWarehouse(e.target.value); setPage(0) }}>
                                 <option value="ALL">All Warehouses</option>
