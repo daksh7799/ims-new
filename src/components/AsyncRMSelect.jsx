@@ -105,7 +105,7 @@ export default function AsyncRMSelect({
   }
 
   return (
-    <div ref={wrapperRef} style={{ position: 'relative', width: '100%' }}>
+    <div ref={wrapperRef} style={{ position: 'relative', width: '100%', zIndex: open ? 9999 : undefined }}>
       <input
         type="text"
         placeholder={placeholder}
@@ -133,7 +133,7 @@ export default function AsyncRMSelect({
           top: '100%',
           left: 0,
           right: 0,
-          zIndex: 100,
+          zIndex: 9999,
           background: 'var(--surface)',
           border: '1px solid var(--border)',
           borderRadius: 6,

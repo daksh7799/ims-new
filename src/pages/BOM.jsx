@@ -242,7 +242,7 @@ export default function BOM() {
                 <span className="badge">Lines: {lines.length}</span>
               </div>
 
-              <div style={{ overflow: "auto" }}>
+              <div style={{ overflow: "visible" }}>
                 <table className="table">
                   <thead>
                     <tr>
