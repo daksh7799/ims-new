@@ -2,30 +2,7 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import { supabase } from "../supabaseClient";
 import AsyncFGSelect from "../components/AsyncFGSelect.jsx";
 import { useNavigate } from "react-router-dom";
-
-/** --- simple internal toast --- **/
-function Toast({ message, type }) {
-  return (
-    <div
-      style={{
-        position: "fixed",
-        bottom: 20,
-        right: 20,
-        background: type === "err" ? "#ffbaba" : "#d4edda",
-        color: type === "err" ? "#721c24" : "#155724",
-        border: "1px solid",
-        borderColor: type === "err" ? "#f5c6cb" : "#c3e6cb",
-        padding: "8px 14px",
-        borderRadius: 8,
-        zIndex: 1000,
-        boxShadow: "0 2px 6px rgba(0,0,0,0.2)",
-        maxWidth: 320,
-      }}
-    >
-      {message}
-    </div>
-  );
-}
+import { useToast } from "../ui/toast.jsx";
 
 function fmt(d) {
   if (!d) return "—";
@@ -35,14 +12,9 @@ function fmt(d) {
 }
 
 export default function Returns() {
+  const { push } = useToast();
   const [tab, setTab] = useState("scan"); // scan | nobarcode | scrap
   const navigate = useNavigate();
-  const [toast, setToast] = useState(null);
-
-  function showToast(message, type = "ok", time = 2500) {
-    setToast({ message, type });
-    setTimeout(() => setToast(null), time);
-  }
 
   // === Return by Scan ===
   const [scanCode, setScanCode] = useState("");
@@ -81,11 +53,13 @@ export default function Returns() {
   /** ---------------- LOAD RECENT RETURNS ---------------- **/
   async function loadRows() {
     setLoadingRows(true);
+
     const { data, error } = await supabase
       .from("v_packet_returned_at")
       .select("*")
       .order("returned_at", { ascending: false })
-      .limit(200);
+      .limit(50);
+
     if (error) console.error(error);
     setRows(data || []);
     setLoadingRows(false);
@@ -93,6 +67,9 @@ export default function Returns() {
 
   useEffect(() => {
     loadRows();
+  }, []);
+
+  useEffect(() => {
     const ch = supabase
       .channel("realtime:packet_returns")
       .on(
@@ -120,7 +97,6 @@ export default function Returns() {
     requestAnimationFrame(() => {
       try {
         const active = document.activeElement;
-        // if user intentionally focused another interactive control, don't steal it
         const activeIsInteractive =
           active &&
           (active.tagName === "INPUT" ||
@@ -129,9 +105,7 @@ export default function Returns() {
             active.getAttribute("role") === "button" ||
             active.isContentEditable);
 
-        // if active is the document body (or nothing) we can safely focus the scanner input
         if (activeIsInteractive && active !== ref.current) {
-          // user is interacting elsewhere — do not steal focus
           return;
         }
 
@@ -150,11 +124,16 @@ export default function Returns() {
     });
   }
 
+  const inFlightRef = useRef(false);
+
   /** ---------------- RETURN BY SCAN ---------------- **/
   async function doReturnByScan(code) {
     const barcode = (code || "").trim();
-    if (!barcode || scanBusy) return;
+    if (!barcode || inFlightRef.current) return;
+
+    inFlightRef.current = true;
     setScanBusy(true);
+
     try {
       const { data, error } = await supabase.rpc("return_packet_scan", {
         p_packet_code: barcode,
@@ -162,17 +141,17 @@ export default function Returns() {
       });
       if (error) throw error;
 
-      // SUCCESS -> clear input
-      showToast(`Packet ${barcode} returned`, "ok");
+      push(`Packet ${barcode} returned`, "ok");
       setScanCode("");
       setScanNote("");
       loadRows();
     } catch (err) {
-      // ERROR -> keep scanCode so user can edit it
-      showToast(err.message, "err");
+      // If error says "Only outwarded...", it might be a double-scan race.
+      // We can optionally suppress it if we want, but for now just show it.
+      push(err.message, "err");
     } finally {
       setScanBusy(false);
-      // attempt to focus/select but don't force if user is interacting elsewhere
+      inFlightRef.current = false;
       tryFocusInput(scanRef);
     }
   }
@@ -195,9 +174,9 @@ export default function Returns() {
 
   /** ---------------- NO BARCODE RETURN (Single) ---------------- **/
   async function doNoBarcode() {
-    if (!nbFgId) return alert("Select a Finished Good");
+    if (!nbFgId) return push("Select a Finished Good", "warn");
     const qty = Number(nbQty);
-    if (!Number.isFinite(qty) || qty <= 0) return alert("Qty must be positive");
+    if (!Number.isFinite(qty) || qty <= 0) return push("Qty must be positive", "warn");
 
     setNbBusy(true);
     try {
@@ -213,45 +192,20 @@ export default function Returns() {
           name: data?.fg_name?.toUpperCase() || "UNKNOWN",
         })) || [];
       setNbCreated(barcodes);
-      showToast(`✅ ${barcodes.length} packet(s) created`);
+      push(`✅ ${barcodes.length} packet(s) created`, "ok");
       loadRows();
     } catch (err) {
-      showToast(err.message, "err");
+      push(err.message, "err");
     } finally {
       setNbBusy(false);
     }
   }
 
   /** ---------------- BULK NO BARCODE RETURN ---------------- **/
-  // Download: ALL finished goods (user wants full list)
-  async function downloadSampleCsv() {
-    const limit = 1000;
-    let from = 0;
-    let to = limit - 1;
-    let all = [];
-
-    while (true) {
-      const { data, error } = await supabase
-        .from("finished_goods")
-        .select("name")
-        .order("name", { ascending: true })
-        .range(from, to);
-
-      if (error) {
-        showToast("Error loading FG list", "err");
-        console.error(error);
-        return;
-      }
-
-      if (!data?.length) break;
-      all.push(...data);
-      if (data.length < limit) break;
-      from += limit;
-      to += limit;
-    }
-
+  // Download: Static sample CSV
+  function downloadSampleCsv() {
     const header = "finished_good_name,qty\n";
-    const body = all.map((r) => `${r.name},`).join("\n");
+    const body = "SAMPLE PRODUCT 1,5\nSAMPLE PRODUCT 2,10\nSAMPLE PRODUCT 3,3\n";
     const blob = new Blob([header + body], { type: "text/csv" });
     const url = URL.createObjectURL(blob);
     const a = document.createElement("a");
@@ -277,16 +231,16 @@ export default function Returns() {
           name: (name || "").trim(),
           qty: Number(qty || 0),
         }))
-        .filter((r) => r.name && Number.isFinite(r.qty) && r.qty > 0); // 🔴 only > 0
+        .filter((r) => r.name && Number.isFinite(r.qty) && r.qty > 0);
 
       setBulkRows(rows);
-      showToast(`${rows.length} item(s) with qty > 0 loaded`, "ok");
+      push(`${rows.length} item(s) with qty > 0 loaded`, "ok");
     };
     reader.readAsText(file);
   }
 
   async function createBulkReturns() {
-    if (!bulkRows.length) return alert("No valid rows loaded");
+    if (!bulkRows.length) return push("No valid rows loaded", "warn");
     setBulkBusy(true);
     setBulkDone(0);
     setBulkTotal(bulkRows.length);
@@ -295,27 +249,18 @@ export default function Returns() {
     const notFound = [];
 
     try {
-      // preload ALL finished goods into a map (to avoid 1 query per row)
-      const limit = 1000;
-      let from = 0,
-        to = limit - 1,
-        allFG = [];
-      while (true) {
-        const { data, error } = await supabase
-          .from("finished_goods")
-          .select("id,name")
-          .order("name", { ascending: true })
-          .range(from, to);
-        if (error) throw error;
-        if (!data?.length) break;
-        allFG.push(...data);
-        if (data.length < limit) break;
-        from += limit;
-        to += limit;
-      }
+      // OPTIMIZATION: Extract unique names and fetch only those FGs
+      const uniqueNames = [...new Set(bulkRows.map(r => r.name))];
+
+      const { data: allFG, error } = await supabase
+        .from("finished_goods")
+        .select("id,name")
+        .in("name", uniqueNames);
+
+      if (error) throw error;
 
       const fgMap = new Map(
-        allFG.map((f) => [f.name.trim().toLowerCase(), f.id])
+        (allFG || []).map((f) => [f.name.trim().toLowerCase(), f.id])
       );
 
       for (let idx = 0; idx < bulkRows.length; idx++) {
@@ -332,7 +277,6 @@ export default function Returns() {
           continue;
         }
 
-        // qty already filtered to > 0 in handleBulkCsv, but keep guard
         const qtyInt = parseInt(r.qty, 10);
         if (!Number.isFinite(qtyInt) || qtyInt <= 0) {
           continue;
@@ -361,17 +305,17 @@ export default function Returns() {
 
       setNbCreated(allCreated);
       if (notFound.length) {
-        showToast(
-          `⚠️ ${notFound.length} item(s) not found: ${notFound.join(", ")}`,
+        push(
+          `⚠️ ${notFound.length} item(s) not found: ${notFound.slice(0, 3).join(", ")}${notFound.length > 3 ? "..." : ""}`,
           "err",
           8000
         );
       } else {
-        showToast(`✅ Created ${allCreated.length} barcodes`, "ok");
+        push(`✅ Created ${allCreated.length} barcodes`, "ok");
       }
     } catch (err) {
       console.error("Bulk return error:", err);
-      showToast(err.message, "err");
+      push(err.message, "err");
     } finally {
       setBulkBusy(false);
       loadRows();
@@ -401,17 +345,14 @@ export default function Returns() {
       });
       if (error) throw error;
 
-      // SUCCESS -> clear input
-      showToast(`Scrapped ${barcode}`, "ok");
+      push(`Scrapped ${barcode}`, "ok");
       setScrapCode("");
       setScrapNote("");
       loadRows();
     } catch (err) {
-      // ERROR -> keep scrapCode so user can edit it
-      showToast(err.message, "err");
+      push(err.message, "err");
     } finally {
       setScrapBusy(false);
-      // attempt to focus/select but don't force if user is interacting elsewhere
       tryFocusInput(scrapRef);
     }
   }
@@ -438,8 +379,6 @@ export default function Returns() {
   /** ---------------- UI ---------------- **/
   return (
     <div className="grid">
-      {toast && <Toast message={toast.message} type={toast.type} />}
-
       <div className="card">
         <div className="hd">
           <b>Returns</b>
@@ -488,7 +427,7 @@ export default function Returns() {
               <button
                 className="btn"
                 onClick={() => doReturnByScan(scanCode)}
-                onMouseDown={(e) => e.preventDefault()} // prevent button from grabbing focus
+                onMouseDown={(e) => e.preventDefault()}
                 disabled={scanBusy}
               >
                 {scanBusy ? "Working…" : "Accept Return"}
@@ -703,7 +642,7 @@ export default function Returns() {
               {!visible.length && (
                 <tr>
                   <td colSpan="5" style={{ color: "var(--muted)" }}>
-                    No returns
+                    {loadingRows ? "Loading..." : "No returns"}
                   </td>
                 </tr>
               )}
