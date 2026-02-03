@@ -80,18 +80,19 @@ export default function RawInwardReport() {
         ...rows.map((r) => [
           r.bill_no || "—",
           r.purchase_date || "—",
+          r.vendor_name || "—",
           r.raw_material_name || "—",
           r.qty || "—",
         ]),
         [
-          { content: "Total Qty:", colSpan: 3, styles: { halign: "right", fontStyle: "bold" } },
+          { content: "Total Qty:", colSpan: 4, styles: { halign: "right", fontStyle: "bold" } },
           { content: rows.reduce((sum, r) => sum + Number(r.qty || 0), 0).toFixed(2), styles: { fontStyle: "bold" } }
         ]
       ];
 
       autoTable(doc, {
         startY: 20,
-        head: [["Bill No", "Purchase Date", "Raw Material", "Qty"]],
+        head: [["Bill No", "Purchase Date", "Vendor", "Raw Material", "Qty"]],
         body,
         theme: "grid",
         styles: { fontSize: 8, cellPadding: 1, textColor: [0, 0, 0], lineColor: [0, 0, 0] },
@@ -101,7 +102,7 @@ export default function RawInwardReport() {
           fontStyle: "bold",
           lineWidth: 0.1
         },
-        columnStyles: { 3: { halign: "right", cellWidth: 20 } },
+        columnStyles: { 4: { halign: "right", cellWidth: 20 } },
       });
 
       // ✅ Open print dialog in same tab
