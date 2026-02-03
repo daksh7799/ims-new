@@ -1,6 +1,7 @@
 // src/pages/AdminMasters.jsx
 import { useEffect, useMemo, useState } from 'react'
 import { supabase } from '../supabaseClient'
+import AsyncRMSelect from '../components/AsyncRMSelect'
 
 /* ---------------- generic paged list loader ----------------
    - Server-side search on one or more columns (searchCols)
@@ -86,6 +87,7 @@ export default function AdminMasters() {
             <button className={`btn small ${tab === 'ven' ? '' : 'outline'}`} onClick={() => setTab('ven')}>Vendors</button>
             <button className={`btn small ${tab === 'cust' ? '' : 'outline'}`} onClick={() => setTab('cust')}>Customers</button>
             <button className={`btn small ${tab === 'pairs' ? '' : 'outline'}`} onClick={() => setTab('pairs')}>Processing Pairs</button>
+            <button className={`btn small ${tab === 'raw_outward' ? '' : 'outline'}`} onClick={() => setTab('raw_outward')}>Raw Outward</button>
           </div>
         </div>
         <div className="bd">
@@ -94,6 +96,7 @@ export default function AdminMasters() {
           {tab === 'ven' && <SimpleSection table="vendors" title="Vendors" />}
           {tab === 'cust' && <SimpleSection table="customers" title="Customers" />}
           {tab === 'pairs' && <PairsSection />}
+          {tab === 'raw_outward' && <RawOutwardSection />}
         </div>
       </div>
     </div>
@@ -499,5 +502,144 @@ function PairsSection() {
         </table>
       </div>
     </>
+  )
+}
+
+/* ---------------- Raw Outward (Multi-line) ---------------- */
+function RawOutwardSection() {
+  const [lines, setLines] = useState([{ id: Date.now(), rm_id: null, qty: '', unit: '' }])
+  const [note, setNote] = useState('')
+  const [loading, setLoading] = useState(false)
+
+  function addLine() {
+    setLines([...lines, { id: Date.now(), rm_id: null, qty: '', unit: '' }])
+  }
+
+  function removeLine(id) {
+    if (lines.length === 1) return
+    setLines(lines.filter(l => l.id !== id))
+  }
+
+  function updateLine(id, patch) {
+    setLines(lines.map(l => l.id === id ? { ...l, ...patch } : l))
+  }
+
+  async function handleOutward() {
+    const validLines = lines.filter(l => l.rm_id && l.qty && !isNaN(Number(l.qty)) && Number(l.qty) > 0)
+    if (validLines.length === 0) return alert('Please add at least one valid raw material and quantity')
+
+    if (!confirm(`Are you sure you want to outward stock for ${validLines.length} items?`)) return
+
+    setLoading(true)
+    try {
+      const { error } = await supabase.rpc('bulk_raw_outward', {
+        p_lines: validLines.map(l => ({ rm_id: l.rm_id, qty: Number(l.qty) })),
+        p_note: note.trim() || null
+      })
+
+      if (error) throw error
+
+      alert('Stock outwarded successfully')
+      setLines([{ id: Date.now(), rm_id: null, qty: '', unit: '' }])
+      setNote('')
+    } catch (err) {
+      alert(err.message || String(err))
+    } finally {
+      setLoading(false)
+    }
+  }
+
+  return (
+    <div style={{ width: '100%', marginTop: 20 }}>
+      <div className="row" style={{ justifyContent: 'space-between', marginBottom: 20, alignItems: 'flex-start' }}>
+        <div>
+          <h2 style={{ marginBottom: 4 }}>Raw Material Outward (Bulk)</h2>
+          <p style={{ color: 'var(--muted)', fontSize: 13 }}>
+            Remove stock for multiple materials in one go. The note will be applied to all items.
+          </p>
+        </div>
+        <div style={{ width: 400 }}>
+          <label style={{ display: 'block', marginBottom: 6, fontWeight: 'bold', fontSize: 13 }}>Shared Note (Reason for Outward)</label>
+          <textarea
+            value={note}
+            onChange={e => setNote(e.target.value)}
+            placeholder="Damaged, Sample, Used for testing, etc."
+            style={{
+              width: '100%',
+              minHeight: 60,
+              padding: '8px 12px',
+              borderRadius: 6,
+              border: '1px solid var(--border)',
+              fontSize: 14,
+              fontFamily: 'inherit',
+              resize: 'vertical'
+            }}
+          />
+        </div>
+      </div>
+
+      <div className="card" style={{ padding: 0, overflow: 'hidden' }}>
+        <table className="table">
+          <thead>
+            <tr>
+              <th style={{ width: '60%' }}>Raw Material</th>
+              <th style={{ width: '20%' }}>Quantity</th>
+              <th style={{ width: '10%' }}>Unit</th>
+              <th style={{ width: '10%', textAlign: 'center' }}>Action</th>
+            </tr>
+          </thead>
+          <tbody>
+            {lines.map((line) => (
+              <tr key={line.id}>
+                <td>
+                  <AsyncRMSelect
+                    value={line.rm_id}
+                    onChange={(id, item) => updateLine(line.id, { rm_id: id, unit: item?.unit || '' })}
+                    placeholder="Search raw material..."
+                  />
+                </td>
+                <td>
+                  <input
+                    type="number"
+                    step="0.001"
+                    value={line.qty}
+                    onChange={e => updateLine(line.id, { qty: e.target.value })}
+                    placeholder="0.00"
+                    style={{ width: '100%', padding: '8px' }}
+                  />
+                </td>
+                <td style={{ color: 'var(--muted)', fontSize: 13 }}>{line.unit || '—'}</td>
+                <td style={{ textAlign: 'center' }}>
+                  <button
+                    className="btn small ghost err"
+                    onClick={() => removeLine(line.id)}
+                    disabled={lines.length === 1}
+                    title="Remove Line"
+                  >
+                    ✕
+                  </button>
+                </td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+        <div style={{ padding: 15, borderTop: '1px solid var(--border)', background: 'var(--bg-faded)', display: 'flex', gap: 10 }}>
+          <button className="btn outline small" onClick={addLine}>
+            + Add Another Material
+          </button>
+        </div>
+      </div>
+
+      <div style={{ marginTop: 25, display: 'flex', justifyContent: 'flex-end' }}>
+        <button
+          className="btn"
+          onClick={handleOutward}
+          disabled={loading || lines.every(l => !l.rm_id || !l.qty)}
+          style={{ padding: '12px 40px', fontSize: 16 }}
+        >
+          {loading ? 'Processing...' : 'Complete Outward Transaction'}
+        </button>
+      </div>
+    </div>
   )
 }
