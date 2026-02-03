@@ -76,20 +76,32 @@ export default function RawInwardReport() {
       doc.setFontSize(14);
       doc.text(`Raw Inward Report — ${date}`, 14, 16);
 
-      const body = rows.map((r) => [
-        r.bill_no || "—",
-        r.purchase_date || "—",
-        r.vendor_name || "—",
-        r.raw_material_name || "—",
-        r.qty || "—",
-      ]);
+      const body = [
+        ...rows.map((r) => [
+          r.bill_no || "—",
+          r.purchase_date || "—",
+          r.raw_material_name || "—",
+          r.qty || "—",
+        ]),
+        [
+          { content: "Total Qty:", colSpan: 3, styles: { halign: "right", fontStyle: "bold" } },
+          { content: rows.reduce((sum, r) => sum + Number(r.qty || 0), 0).toFixed(2), styles: { fontStyle: "bold" } }
+        ]
+      ];
 
       autoTable(doc, {
-        startY: 26,
-        head: [["Bill No", "Purchase Date", "Vendor", "Raw Material", "Qty"]],
+        startY: 20,
+        head: [["Bill No", "Purchase Date", "Raw Material", "Qty"]],
         body,
-        styles: { fontSize: 9, cellPadding: 2 },
-        columnStyles: { 4: { halign: "right", cellWidth: 25 } },
+        theme: "grid",
+        styles: { fontSize: 8, cellPadding: 1, textColor: [0, 0, 0], lineColor: [0, 0, 0] },
+        headStyles: {
+          fillColor: [255, 255, 255],
+          textColor: [0, 0, 0],
+          fontStyle: "bold",
+          lineWidth: 0.1
+        },
+        columnStyles: { 3: { halign: "right", cellWidth: 20 } },
       });
 
       // ✅ Open print dialog in same tab
