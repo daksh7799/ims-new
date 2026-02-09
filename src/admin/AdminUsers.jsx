@@ -7,7 +7,7 @@ const ALL_MODULES = [
   'sales','outward','returns','inv-rm','inv-fg',
   'blends','blend-mfg','raw-inward-report','sku-mappings',
   // utilities
-  'trace','raw-adjust','so-admin','raw-process','fg-sales','daily-report', // ✅ Added fg-sales here
+  'trace','raw-adjust','so-admin','raw-process','fg-sales','daily-report', 'raw-consumed', // ✅ Added fg-sales here
   // admin areas
   'masters','admin','bill-check','ledger','mo-admin','consignment',
 ]
