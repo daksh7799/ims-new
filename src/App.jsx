@@ -1,5 +1,6 @@
 // src/App.jsx
 import { BrowserRouter, Routes, Route, NavLink } from 'react-router-dom'
+import { useState } from 'react'
 import { supabase } from './supabaseClient'
 import useSessionProfile from './auth/useSessionProfile'
 import Login from './auth/Login.jsx'
@@ -72,18 +73,19 @@ const LINKS = [
   { key: 'fg-sales', path: '/fg-sales', label: 'FG Sales Report' },
   { key: 'daily-report', path: '/daily-report', label: 'Daily Stock Report' }, // ← add this
   { key: 'raw-inward-report', path: '/raw-inward-report', label: 'Raw Inward Report' }, // ← add this
-  { key: 'raw-consumed', path: '/raw-consumed', label: 'Raw Consumed' }, 
+  { key: 'raw-consumed', path: '/raw-consumed', label: 'Raw Consumed' },
   // admin
   { key: 'masters', path: '/masters', label: 'Masters' },
   { key: 'admin', path: '/admin', label: 'Admin' },
   { key: 'sku-mappings', path: '/sku-mappings', label: 'SKU Mappings' },
   { key: 'bom', path: '/bom', label: 'BOM' },// 👈 NEW MODULE
   { key: 'blends', path: '/blends', label: 'Blend Recipes' },
-  { key: 'consignment', path: '/consignment', label: 'Consignment' }
+  { key: 'consignment', path: '/consignment', label: 'Consignment' },
 ]
 
 export default function App() {
   const { session, profile, loading } = useSessionProfile()
+  const [mobileOpen, setMobileOpen] = useState(false)
 
   if (loading) return <div className="s" style={{ padding: 20 }}>Loading…</div>
   if (!session) return <Login />
@@ -95,12 +97,25 @@ export default function App() {
   return (
     <BrowserRouter>
       <div className="container">
-        <aside className="sidebar">
+        {/* Mobile Header */}
+        <header className="mobile-header">
           <div className="brand"><span className="dot"></span> IMS</div>
+          <button className="hamburger" onClick={() => setMobileOpen(!mobileOpen)}>
+            {mobileOpen ? '✕' : '☰'}
+          </button>
+        </header>
+
+        <aside className={`sidebar ${mobileOpen ? 'open' : ''}`}>
+          <div className="brand desktop-only"><span className="dot"></span> IMS</div>
 
           <nav className="nav">
             {LINKS.filter(l => canSee(l.key)).map(l => (
-              <NavLink key={l.key} to={l.path} end={l.end}>
+              <NavLink
+                key={l.key}
+                to={l.path}
+                end={l.end}
+                onClick={() => setMobileOpen(false)}
+              >
                 {l.label}
               </NavLink>
             ))}
