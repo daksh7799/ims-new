@@ -11,6 +11,22 @@ export default function SKUMappings() {
     const [loading, setLoading] = useState(true)
     const [q, setQ] = useState('')
 
+    // Master lists from DB
+    const [dbPortals, setDbPortals] = useState([])
+    const [dbCategories, setDbCategories] = useState([]) // All categories for all portals
+    const [portalCategories, setPortalCategories] = useState([]) // Filtered for current bulk portal
+
+    // Bulk selection
+    const [selectedSkus, setSelectedSkus] = useState(new Set())
+    const [bulkMeta, setBulkMeta] = useState({
+        portal: '',
+        category: 'Other',
+        is_category_fee: true,
+        is_weight_fee: true,
+        is_amount_fee: true
+    })
+    const [bulkSaving, setBulkSaving] = useState(false)
+
     // Pagination state
     const [page, setPage] = useState(0)
     const [pageSize, setPageSize] = useState(100)
@@ -29,6 +45,33 @@ export default function SKUMappings() {
 
     // Bulk import mode state
     const [importMode, setImportMode] = useState('update') // 'update' or 'replace'
+
+    // SKU meta (category + portals)
+    const [metaMap, setMetaMap] = useState({}) // {sku: {category, portals}}
+
+    const loadConfig = useCallback(async () => {
+        const { data: pData } = await supabase.from('costing_portals').select('code, name').order('name')
+        setDbPortals(pData || [])
+        if (pData?.length && !bulkMeta.portal) {
+            setBulkMeta(prev => ({ ...prev, portal: pData[0].code }))
+        }
+
+        const { data: cData } = await supabase.from('costing_categories').select('*').order('name')
+        setDbCategories(cData || [])
+    }, [bulkMeta.portal])
+
+    useEffect(() => { loadConfig() }, [loadConfig])
+
+    // Update available categories when bulk portal changes
+    useEffect(() => {
+        if (!bulkMeta.portal) return
+        const filtered = dbCategories.filter(c => c.portal === bulkMeta.portal).map(c => c.name)
+        if (!filtered.includes('Other')) filtered.push('Other')
+        setPortalCategories(filtered)
+        if (!filtered.includes(bulkMeta.category)) {
+            setBulkMeta(prev => ({ ...prev, category: 'Other' }))
+        }
+    }, [bulkMeta.portal, dbCategories])
 
     const load = useCallback(async () => {
         setLoading(true)
@@ -91,6 +134,19 @@ export default function SKUMappings() {
             }))
 
             setMappings(merged)
+
+            // Load sku_portal_metadata for these SKUs to show which portals they are on
+            const { data: metaData } = await supabase
+                .from('sku_portal_metadata')
+                .select('sku, portal, category')
+                .in('sku', skuCodes)
+
+            const mm = {}
+            metaData?.forEach(m => {
+                if (!mm[m.sku]) mm[m.sku] = { portalMeta: {} }
+                mm[m.sku].portalMeta[m.portal] = m.category || ''
+            })
+            setMetaMap(mm)
         } catch (err) {
             console.error('Load error:', err)
             push(err.message, 'err')
@@ -98,6 +154,82 @@ export default function SKUMappings() {
             setLoading(false)
         }
     }, [page, pageSize, q, push])
+
+    async function saveSkuMeta(skuCode, portal, category, toggles = {}) {
+        const { error } = await supabase
+            .from('sku_portal_metadata')
+            .upsert({
+                sku: skuCode,
+                portal,
+                category,
+                ...toggles,
+                updated_at: new Date().toISOString()
+            }, { onConflict: 'sku,portal' })
+
+        if (error) { push(`Meta save error: ${error.message}`, 'err'); return }
+        load() // Reload to refresh the indicators
+    }
+
+    async function removeSkuPortalMeta(skuCode, portal) {
+        const { error } = await supabase
+            .from('sku_portal_metadata')
+            .delete()
+            .eq('sku', skuCode)
+            .eq('portal', portal)
+
+        if (error) { push(`Meta delete error: ${error.message}`, 'err'); return }
+        load()
+    }
+
+    async function bulkSaveMeta() {
+        if (selectedSkus.size === 0 || !bulkMeta.portal) return
+        setBulkSaving(true)
+        try {
+            const skuList = Array.from(selectedSkus)
+            const upserts = skuList.map(s => ({
+                sku: s,
+                portal: bulkMeta.portal,
+                category: bulkMeta.category,
+                is_category_fee: bulkMeta.is_category_fee,
+                is_weight_fee: bulkMeta.is_weight_fee,
+                is_amount_fee: bulkMeta.is_amount_fee,
+                updated_at: new Date().toISOString()
+            }))
+
+            const CHUNK = 500
+            for (let i = 0; i < upserts.length; i += CHUNK) {
+                const { error } = await supabase
+                    .from('sku_portal_metadata')
+                    .upsert(upserts.slice(i, i + CHUNK), { onConflict: 'sku,portal' })
+                if (error) throw error
+            }
+
+            push(`Configured ${skuList.length} SKUs for ${bulkMeta.portal} successfully!`, 'ok')
+            setSelectedSkus(new Set())
+            load()
+        } catch (err) {
+            push(err.message, 'err')
+        } finally {
+            setBulkSaving(false)
+        }
+    }
+
+    function toggleSelectAll() {
+        if (selectedSkus.size >= mappings.length) {
+            setSelectedSkus(new Set())
+        } else {
+            setSelectedSkus(new Set(mappings.map(m => m.sku)))
+        }
+    }
+
+    function toggleSelectOne(skuCode) {
+        setSelectedSkus(prev => {
+            const next = new Set(prev)
+            if (next.has(skuCode)) next.delete(skuCode)
+            else next.add(skuCode)
+            return next
+        })
+    }
 
     useEffect(() => { load() }, [load])
 
@@ -830,20 +962,100 @@ export default function SKUMappings() {
                     <table className="table">
                         <thead>
                             <tr>
-                                <th>SKU</th>
-                                <th>Description</th>
-                                <th>Items</th>
-                                <th>Actions</th>
+                                <th style={{ width: 40 }}>
+                                    <input type="checkbox" checked={mappings.length > 0 && selectedSkus.size >= mappings.length} onChange={toggleSelectAll} />
+                                </th>
+                                <th style={{ width: '25%' }}>SKU & Description</th>
+                                <th style={{ width: '45%' }}>Marketplace Configurations</th>
+                                <th style={{ width: '15%' }}>Portal Assignment</th>
+                                <th style={{ width: '15%' }}>Actions</th>
                             </tr>
                         </thead>
                         <tbody>
                             {mappings.map(m => (
                                 <Fragment key={m.sku}>
-                                    <tr>
+                                    <tr className={selectedSkus.has(m.sku) ? 'selected-row' : ''}>
                                         <td>
-                                            <code style={{ fontSize: '0.9em' }}>{m.sku}</code>
+                                            <input type="checkbox" checked={selectedSkus.has(m.sku)} onChange={() => toggleSelectOne(m.sku)} />
                                         </td>
-                                        <td>{m.description || '—'}</td>
+                                        <td>
+                                            <div style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
+                                                <code style={{ fontSize: '1em', color: 'var(--primary)', fontWeight: 600 }}>{m.sku}</code>
+                                                <div className="s" style={{ color: 'var(--muted)', fontSize: '0.85em' }}>{m.description || 'No description'}</div>
+                                                <div style={{ marginTop: 4 }}>
+                                                    <button
+                                                        className="btn ghost xsmall"
+                                                        onClick={() => toggleExpand(m.sku)}
+                                                        style={{ padding: '2px 8px', fontSize: '0.75em', background: 'var(--bg-alt)' }}
+                                                    >
+                                                        {expandedRows.has(m.sku) ? '▼' : '▶'} {m.items.length} item{m.items.length !== 1 ? 's' : ''}
+                                                    </button>
+                                                </div>
+                                            </div>
+                                        </td>
+                                        <td>
+                                            <div style={{ display: 'flex', flexWrap: 'wrap', gap: 8 }}>
+                                                {Object.entries(metaMap[m.sku]?.portalMeta || {}).map(([p, cat]) => (
+                                                    <div key={p} style={{
+                                                        background: 'var(--bg-card)',
+                                                        border: '1px solid var(--border)',
+                                                        borderRadius: 8,
+                                                        padding: '6px 10px',
+                                                        minWidth: 140,
+                                                        boxShadow: '0 2px 4px rgba(0,0,0,0.05)',
+                                                        display: 'flex',
+                                                        flexDirection: 'column',
+                                                        gap: 2
+                                                    }}>
+                                                        <div className="row" style={{ justifyContent: 'space-between', marginBottom: 2 }}>
+                                                            <b style={{ fontSize: '0.7em', color: 'var(--primary)', letterSpacing: '0.05em' }}>{p.toUpperCase()}</b>
+                                                            <button className="btn ghost xsmall" onClick={() => removeSkuPortalMeta(m.sku, p)} style={{ padding: 0, height: 14, width: 14 }}>✕</button>
+                                                        </div>
+                                                        <select
+                                                            value={cat}
+                                                            onChange={e => saveSkuMeta(m.sku, p, e.target.value)}
+                                                            style={{ fontSize: '0.85em', border: 'none', background: 'transparent', padding: 0, color: 'var(--text-main)', cursor: 'pointer', fontWeight: 500 }}
+                                                        >
+                                                            {(dbCategories.filter(c => c.portal === p).map(c => c.name).concat(['Other'])).map(c => <option key={c} value={c}>{c}</option>)}
+                                                        </select>
+                                                    </div>
+                                                ))}
+                                                {Object.keys(metaMap[m.sku]?.portalMeta || {}).length === 0 && (
+                                                    <div className="s" style={{ padding: '8px 12px', background: 'var(--bg-alt)', borderRadius: 8, border: '1px dashed var(--border)', color: 'var(--muted)', width: '100%', textAlign: 'center' }}>
+                                                        No marketplaces assigned. Use the checklist on the right.
+                                                    </div>
+                                                )}
+                                            </div>
+                                        </td>
+                                        <td>
+                                            <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 6 }}>
+                                                {dbPortals.map(portalObj => {
+                                                    const p = portalObj.code
+                                                    const checked = !!metaMap[m.sku]?.portalMeta?.[p]
+                                                    return (
+                                                        <label key={p} style={{
+                                                            display: 'flex',
+                                                            alignItems: 'center',
+                                                            gap: 6,
+                                                            fontSize: '0.75em',
+                                                            cursor: 'pointer',
+                                                            padding: '4px 6px',
+                                                            borderRadius: 6,
+                                                            background: checked ? 'var(--primary-subtle)' : 'var(--bg-alt)',
+                                                            border: `1px solid ${checked ? 'var(--primary)' : 'transparent'}`,
+                                                            color: checked ? 'var(--primary-dark)' : 'var(--text-main)',
+                                                            transition: 'all 0.2s'
+                                                        }}>
+                                                            <input type="checkbox" checked={checked} onChange={() => {
+                                                                if (checked) removeSkuPortalMeta(m.sku, p)
+                                                                else saveSkuMeta(m.sku, p, 'Other')
+                                                            }} style={{ width: 12, height: 12 }} />
+                                                            {portalObj.name}
+                                                        </label>
+                                                    )
+                                                })}
+                                            </div>
+                                        </td>
                                         <td>
                                             <button
                                                 className="btn ghost"
@@ -871,7 +1083,7 @@ export default function SKUMappings() {
                                     </tr>
                                     {expandedRows.has(m.sku) && (
                                         <tr>
-                                            <td colSpan="4" style={{ background: 'var(--bg-secondary)', padding: 12 }}>
+                                            <td colSpan="6" style={{ background: 'var(--bg-secondary)', padding: 12 }}>
                                                 {editingSku === m.sku ? (
                                                     <div style={{ display: 'grid', gap: 10 }}>
                                                         <input
@@ -945,7 +1157,7 @@ export default function SKUMappings() {
                             ))}
                             {mappings.length === 0 && (
                                 <tr>
-                                    <td colSpan="4" style={{ color: 'var(--muted)' }}>
+                                    <td colSpan="6" style={{ color: 'var(--muted)' }}>
                                         {loading ? 'Loading…' : q ? 'No SKUs found matching your search' : 'No SKU mappings found'}
                                     </td>
                                 </tr>
@@ -954,6 +1166,58 @@ export default function SKUMappings() {
                     </table>
                 </div>
             </div>
+
+            {/* Bulk Action Bar */}
+            {selectedSkus.size > 0 && (
+                <div style={{
+                    position: 'fixed', bottom: 20, left: '50%', transform: 'translateX(-50%)',
+                    background: 'var(--bg-card)', border: '2px solid var(--primary)', borderRadius: 12,
+                    padding: '12px 24px', boxShadow: '0 8px 32px rgba(0,0,0,0.4)', zIndex: 1000,
+                    display: 'flex', alignItems: 'center', gap: 20, minWidth: 600
+                }}>
+                    <div style={{ fontWeight: 700, color: 'var(--primary)' }}>{selectedSkus.size} SKUs Selected</div>
+
+                    <div className="row" style={{ gap: 10, flex: 1, flexWrap: 'nowrap', overflowX: 'auto' }}>
+                        <select
+                            value={bulkMeta.portal}
+                            onChange={e => setBulkMeta(prev => ({ ...prev, portal: e.target.value }))}
+                            style={{ padding: '6px 12px', borderColor: 'var(--primary)', fontWeight: 600 }}
+                        >
+                            {dbPortals.map(p => <option key={p.code} value={p.code}>Target: {p.name}</option>)}
+                        </select>
+
+                        <select
+                            value={bulkMeta.category}
+                            onChange={e => setBulkMeta(prev => ({ ...prev, category: e.target.value }))}
+                            style={{ padding: '6px 12px' }}
+                        >
+                            {portalCategories.map(c => <option key={c} value={c}>{c}</option>)}
+                        </select>
+
+                        <div className="row" style={{ gap: 6 }}>
+                            <label className="badge xsmall outline" style={{ cursor: 'pointer', borderColor: bulkMeta.is_category_fee ? 'var(--primary)' : 'var(--border)', opacity: bulkMeta.is_category_fee ? 1 : 0.5 }}>
+                                <input type="checkbox" checked={bulkMeta.is_category_fee} onChange={e => setBulkMeta(p => ({ ...p, is_category_fee: e.target.checked }))} style={{ display: 'none' }} />
+                                Cat Fee
+                            </label>
+                            <label className="badge xsmall outline" style={{ cursor: 'pointer', borderColor: bulkMeta.is_weight_fee ? 'var(--primary)' : 'var(--border)', opacity: bulkMeta.is_weight_fee ? 1 : 0.5 }}>
+                                <input type="checkbox" checked={bulkMeta.is_weight_fee} onChange={e => setBulkMeta(p => ({ ...p, is_weight_fee: e.target.checked }))} style={{ display: 'none' }} />
+                                Wgt Fee
+                            </label>
+                            <label className="badge xsmall outline" style={{ cursor: 'pointer', borderColor: bulkMeta.is_amount_fee ? 'var(--primary)' : 'var(--border)', opacity: bulkMeta.is_amount_fee ? 1 : 0.5 }}>
+                                <input type="checkbox" checked={bulkMeta.is_amount_fee} onChange={e => setBulkMeta(p => ({ ...p, is_amount_fee: e.target.checked }))} style={{ display: 'none' }} />
+                                Amt Fee
+                            </label>
+                        </div>
+                    </div>
+
+                    <div className="row" style={{ gap: 10 }}>
+                        <button className="btn ghost small" onClick={() => setSelectedSkus(new Set())}>Cancel</button>
+                        <button className="btn" onClick={bulkSaveMeta} disabled={bulkSaving}>
+                            {bulkSaving ? 'Saving…' : 'Apply Bulk Update'}
+                        </button>
+                    </div>
+                </div>
+            )}
         </div>
     )
 }
