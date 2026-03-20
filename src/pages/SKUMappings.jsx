@@ -419,6 +419,130 @@ export default function SKUMappings() {
         saveAs(blob, 'sku_mappings_sample.csv')
     }
 
+    function downloadSamplePortalCSV() {
+        const headers = ['SKU', 'Portal', 'Category']
+        const rows = [
+            ['gs_ragi_atta_1kgx5', 'amazon', 'Grocery & Gourmet Foods'],
+            ['gs_chilli_oregano_combo', 'flipkart', 'Other'],
+            ['gs_chilli_oregano_combo', 'amazon', 'Grocery & Gourmet Foods']
+        ]
+        const csvContent = [headers, ...rows].map(r => r.join(',')).join('\n')
+        const blob = new Blob([csvContent], { type: 'text/csv;charset=utf-8;' })
+        saveAs(blob, 'sku_portal_assignment_sample.csv')
+    }
+
+    async function onBulkPortalImport(e) {
+        const f = e.target.files?.[0]
+        if (!f) return
+
+        try {
+            const buf = await f.arrayBuffer()
+            const wb = XLSX.read(buf, { type: 'array' })
+            const ws = wb.Sheets[wb.SheetNames[0]]
+            const rows = XLSX.utils.sheet_to_json(ws, { defval: '' })
+
+            if (rows.length === 0) throw new Error('No rows found in file')
+
+            push(`Parsing ${rows.length} rows…`, 'ok')
+
+            const upserts = []
+            const failedRows = []
+
+            for (const r of rows) {
+                const skuCode = String(r['SKU'] ?? r['sku'] ?? '').trim()
+                const portal = String(r['Portal'] ?? r['portal'] ?? '').trim().toLowerCase()
+                const category = String(r['Category'] ?? r['category'] ?? 'Other').trim() || 'Other'
+
+                if (!skuCode || !portal) {
+                    failedRows.push({ SKU: skuCode || '(blank)', Portal: portal || '(blank)', Category: category, Error: 'SKU and Portal are required' })
+                    continue
+                }
+
+                upserts.push({
+                    sku: skuCode,
+                    portal,
+                    category,
+                    updated_at: new Date().toISOString()
+                })
+            }
+
+            if (upserts.length === 0) {
+                throw new Error('No valid rows found. Make sure columns are: SKU, Portal, Category')
+            }
+
+            // Validate that all SKU codes exist in sku_mappings (FK constraint check)
+            push(`Validating ${upserts.length} SKU codes…`, 'ok')
+            const uniqueSkus = [...new Set(upserts.map(u => u.sku))]
+            const existingSkuSet = new Set()
+            const CHUNK = 500
+            for (let i = 0; i < uniqueSkus.length; i += CHUNK) {
+                const { data: found, error: skuErr } = await supabase
+                    .from('sku_mappings')
+                    .select('sku')
+                    .in('sku', uniqueSkus.slice(i, i + CHUNK))
+                if (skuErr) throw skuErr
+                found?.forEach(r => existingSkuSet.add(r.sku))
+            }
+
+            // Split upserts into valid (SKU exists) vs failed (SKU not in system)
+            const validUpserts = []
+            for (const u of upserts) {
+                if (existingSkuSet.has(u.sku)) {
+                    validUpserts.push(u)
+                } else {
+                    failedRows.push({ SKU: u.sku, Portal: u.portal, Category: u.category, Error: 'SKU not found in system — create the SKU mapping first' })
+                }
+            }
+
+            if (validUpserts.length === 0) {
+                throw new Error(`All ${upserts.length} rows failed: none of the SKU codes exist in the system.`)
+            }
+
+            // Deduplicate by sku+portal to avoid Postgres "cannot affect row a second time" error
+            // (If the CSV has duplicates, the last one wins)
+            const deduplicatedMap = new Map()
+            for (const u of validUpserts) {
+                deduplicatedMap.set(`${u.sku}_${u.portal}`, u)
+            }
+            const finalUpserts = Array.from(deduplicatedMap.values())
+
+            push(`Assigning ${finalUpserts.length} portal mappings…`, 'ok')
+
+            let successCount = 0
+            for (let i = 0; i < finalUpserts.length; i += CHUNK) {
+                const { error } = await supabase
+                    .from('sku_portal_metadata')
+                    .upsert(finalUpserts.slice(i, i + CHUNK), { onConflict: 'sku,portal' })
+                if (error) {
+                    const chunk = finalUpserts.slice(i, i + CHUNK)
+                    chunk.forEach(u => failedRows.push({ SKU: u.sku, Portal: u.portal, Category: u.category, Error: error.message }))
+                } else {
+                    successCount += Math.min(CHUNK, finalUpserts.length - i)
+                }
+            }
+
+            if (failedRows.length > 0) {
+                push(`Assigned ${successCount} portal mappings. ${failedRows.length} failed. Downloading error report…`, 'warn')
+                const headers = ['SKU', 'Portal', 'Category', 'Error']
+                const csvContent = [
+                    headers.join(','),
+                    ...failedRows.map(r => [`"${r.SKU}"`, `"${r.Portal}"`, `"${r.Category}"`, `"${r.Error}"`].join(','))
+                ].join('\n')
+                const blob = new Blob([csvContent], { type: 'text/csv;charset=utf-8;' })
+                saveAs(blob, 'portal_assign_errors.csv')
+            } else {
+                push(`Successfully assigned ${successCount} portal mappings!`, 'ok')
+            }
+
+            load()
+        } catch (err) {
+            console.error(err)
+            push(err.message, 'err')
+        } finally {
+            e.target.value = ''
+        }
+    }
+
     async function exportCurrentSKUs() {
         try {
             push('Exporting SKU mappings...', 'ok')
@@ -916,6 +1040,25 @@ export default function SKUMappings() {
                             For combo SKUs, use multiple rows with the same SKU code.
                         </div>
                     </div>
+
+                    {/* Bulk Portal Assignment via CSV */}
+                    <div style={{ paddingTop: 12, borderTop: '1px solid var(--border)' }}>
+                        <div style={{ marginBottom: 8 }}>
+                            <div style={{ fontWeight: 600, marginBottom: 4 }}>🏪 Bulk Portal Assignment via CSV</div>
+                            <div className="s" style={{ color: 'var(--muted)' }}>
+                                Assign portals to many SKUs at once by uploading a CSV with columns:
+                                {' '}<code>SKU</code>, <code>Portal</code>, <code>Category</code> (optional, defaults to &quot;Other&quot;).
+                                One row per SKU-portal pair. Existing assignments will be updated.
+                            </div>
+                        </div>
+                        <div className="row" style={{ gap: 8 }}>
+                            <label className="btn" style={{ cursor: 'pointer', display: 'inline-flex', alignItems: 'center', gap: 6 }}>
+                                📤 Upload Portal CSV
+                                <input type="file" accept=".xlsx,.xls,.csv" onChange={onBulkPortalImport} style={{ display: 'none' }} />
+                            </label>
+                            <button className="btn ghost" onClick={downloadSamplePortalCSV}>📄 Sample Portal CSV</button>
+                        </div>
+                    </div>
                 </div>
             </div>
 
@@ -1016,7 +1159,7 @@ export default function SKUMappings() {
                                                             onChange={e => saveSkuMeta(m.sku, p, e.target.value)}
                                                             style={{ fontSize: '0.85em', border: 'none', background: 'transparent', padding: 0, color: 'var(--text-main)', cursor: 'pointer', fontWeight: 500 }}
                                                         >
-                                                            {(dbCategories.filter(c => c.portal === p).map(c => c.name).concat(['Other'])).map(c => <option key={c} value={c}>{c}</option>)}
+                                                            {[...new Set(dbCategories.filter(c => c.portal === p).map(c => c.name).concat(['Other']))].map(c => <option key={c} value={c}>{c}</option>)}
                                                         </select>
                                                     </div>
                                                 ))}
