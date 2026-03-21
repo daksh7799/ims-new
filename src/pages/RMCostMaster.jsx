@@ -23,12 +23,65 @@ export default function RMCostMaster() {
             const { data, error } = await query
             if (error) throw error
 
-            // Fetch checked rates from Bill Check module
-            const { data: checkedRates } = await supabase.from('v_checked_rm_rates').select('*')
+            const [
+                { data: allCosts },
+                { data: checkedRates },
+                { data: blendsList },
+                { data: blendRecipes }
+            ] = await Promise.all([
+                supabase.from('rm_cost_per_kg').select('rm_name, cost_per_kg'),
+                supabase.from('v_checked_rm_rates').select('*'),
+                supabase.from('v_blends_list').select('*').eq('is_active', true),
+                supabase.from('v_blend_recipe_for_output').select('*')
+            ])
+
+            // Build map of actual rm_cost_per_kg entries
+            const costMap = new Map((allCosts || []).map(c => [(c.rm_name || '').trim().toLowerCase(), Number(c.cost_per_kg) || 0]))
+
+            // Group recipes by output raw material id
+            const recipesByOutput = {}
+            for (const r of (blendRecipes || [])) {
+                if (!recipesByOutput[r.output_rm_id]) recipesByOutput[r.output_rm_id] = []
+                recipesByOutput[r.output_rm_id].push(r)
+            }
+
+            const blendCosts = new Map() // lowercased output name -> calculated cost
+            let changed = true
+            let iterations = 0
+            while(changed && iterations < 10) {
+                changed = false
+                iterations++
+                for (const blend of (blendsList || [])) {
+                    const outNameKey = (blend.output_name || '').trim().toLowerCase()
+                    const comps = recipesByOutput[blend.output_raw_material_id] || []
+                    let blendCost = 0
+                    for (const comp of comps) {
+                        const compKey = (comp.component_name || '').trim().toLowerCase()
+                        // Component could be another blend or a basic RM
+                        const compCost = blendCosts.has(compKey) ? blendCosts.get(compKey) : (costMap.get(compKey) || 0)
+                        blendCost += (Number(comp.qty_per_kg) || 0) * compCost
+                    }
+                    if (blendCosts.get(outNameKey) !== blendCost) {
+                        blendCosts.set(outNameKey, blendCost)
+                        changed = true
+                    }
+                }
+            }
 
             const merged = (data || []).map(c => {
-                const ref = checkedRates?.find(r => r.rm_name_key === c.rm_name.toLowerCase())
-                return { ...c, ref_price: ref?.checked_rate || 0 }
+                const key = (c.rm_name || '').trim().toLowerCase()
+                let refPrice = 0
+                let isBlend = false
+
+                if (blendCosts.has(key)) {
+                    refPrice = blendCosts.get(key)
+                    isBlend = true
+                } else {
+                    const ref = checkedRates?.find(r => r.rm_name_key === key)
+                    refPrice = ref?.checked_rate || 0
+                }
+
+                return { ...c, ref_price: refPrice, is_blend: isBlend }
             })
 
             setCosts(merged)
@@ -182,7 +235,14 @@ export default function RMCostMaster() {
                                 )}
                                 {!loading && costs.map(c => (
                                     <tr key={c.id}>
-                                        <td><b>{c.rm_name}</b></td>
+                                        <td>
+                                            <b>{c.rm_name}</b>
+                                            {c.is_blend && (
+                                                <span className="badge" style={{ marginLeft: 8, fontSize: '0.7em', padding: '2px 6px', color: 'var(--primary)', borderColor: 'var(--primary)', backgroundColor: 'transparent' }}>
+                                                    Blend
+                                                </span>
+                                            )}
+                                        </td>
                                         <td style={{ textAlign: 'right', color: 'var(--muted)' }}>₹{Number(c.ref_price || 0).toFixed(2)}</td>
                                         <td style={{ textAlign: 'right' }}>
                                             <input

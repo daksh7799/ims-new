@@ -202,16 +202,12 @@ export default function CostingMatrix() {
         let totalPctOnCost = 0
         let totalPctOnMarket = 0
         let totalPctOnFinal = 0
-        let gstShipPct = 0
         let indirectPct = 0
 
         constFees.forEach(f => {
             const val = Number(f.value) || 0
-            const label = (f.label || '').toLowerCase()
-            if (label.includes('gst on ship')) {
-                gstShipPct = val
-            } else if (label.includes('ind')) {
-                indirectPct = val
+            if (f.target === 'indirect') {
+                indirectPct += val
             } else {
                 if (f.unit === 'flat') {
                     totalFlat += val
@@ -229,31 +225,80 @@ export default function CostingMatrix() {
         const useAmountFee = settings.has_closing_fees && row.is_amount_fee !== false
 
         const shipFee = useWeightFee ? getShippingFee(weightKg) : 0
-        const shipTotal = Math.round(shipFee * (1 + gstShipPct / 100) * 100) / 100
+        const shipTotal = shipFee
 
-        // 1. Stage 1: Fixed Cost Base (NLC + Rupee Fees + Shipping)
-        // All rupee fees (tech, etc) are already in totalFlat
+        // Stage 1: Fixed Cost Base (NLC + Rupee Fees + Shipping)
         const fixedBase = nlc + totalFlat + shipTotal
 
-        // 2. Stage 2: Marketplace Price (Price@NLC)
-        // We assume 15% as a rough referral for the first pass (slab fetching)
-        const estDenominator = 1 - (0.15 + totalPctOnMarket / 100)
-        const roughPrice = fixedBase / Math.max(0.01, estDenominator)
+        // Stage 2: Pure Deterministic Calculation of Selling Price without loops
+        const costMarkup = 1 + totalPctOnCost / 100
+        let closingFee = 0
+        let referralPct = 0
 
-        const closingFee = useAmountFee ? getClosingFee(roughPrice) : 0
-        const referralPct = useCategoryFee ? getReferralPct(category, roughPrice) : 0
+        let validCandidates = [];
+        
+        const activeClosingSlabs = useAmountFee && closingSlabs.length > 0 ? closingSlabs : [{ max_price: 9999999, fee: 0 }];
+        const catFees = referralFees.filter(r => r.category === category);
+        const activeReferralSlabs = useCategoryFee && catFees.length > 0 ? catFees : [{ max_price: 9999999, referral_pct: 0 }];
+
+        // Evaluate all possible slab combinations to find true mathematical candidates
+        activeClosingSlabs.forEach((cItem, cIdx) => {
+            activeReferralSlabs.forEach((rItem, rIdx) => {
+                const cFee = Number(cItem.fee) || 0;
+                const rPct = Number(rItem.referral_pct) || 0;
+                
+                const totalDeductionPct = (rPct + totalPctOnMarket + totalPctOnFinal) / 100;
+                const divisor = Math.max(0.0001, 1 - totalDeductionPct);
+                
+                const baseSP = ((fixedBase + cFee) * costMarkup) / divisor;
+                const exactSP = baseSP * (1 + indirectPct / 100);
+                
+                // MROUND to nearest 5 (just like Excel MROUND)
+                const rawSP = Math.round(exactSP / 5) * 5;
+                
+                // Determine limits for these specific slabs
+                const cMin = cIdx === 0 ? 0 : activeClosingSlabs[cIdx - 1].max_price;
+                const cMax = cItem.max_price;
+                
+                const rMin = rIdx === 0 ? 0 : activeReferralSlabs[rIdx - 1].max_price;
+                const rMax = rItem.max_price;
+                
+                const validClosing = !useAmountFee || (rawSP > cMin && rawSP <= cMax);
+                const validReferral = !useCategoryFee || (rawSP > rMin && rawSP <= rMax);
+                
+                if (validClosing && validReferral) {
+                    validCandidates.push({
+                        sellingPrice: rawSP,
+                        closingFee: cFee,
+                        referralPct: rPct
+                    });
+                }
+            });
+        });
+
+        // Filter valid candidates and pick the lowest valid selling price (to remain competitive and drop into cheaper fee slabs)
+        if (validCandidates.length > 0) {
+            validCandidates.sort((a, b) => a.sellingPrice - b.sellingPrice);
+            const best = validCandidates[0];
+            closingFee = best.closingFee;
+            referralPct = best.referralPct;
+        } else {
+            // Fallback (e.g. if slabs don't cover the calculated range)
+            closingFee = useAmountFee && closingSlabs.length ? Number(closingSlabs[closingSlabs.length - 1].fee) : 0;
+            referralPct = useCategoryFee && catFees.length ? Number(catFees[catFees.length - 1].referral_pct) : 0;
+        }
 
         // Price@NLC: Base / (1 - Marketplace%)
         const marketDeduction = (referralPct + totalPctOnMarket) / 100
-        const priceAtNLC = (fixedBase + closingFee) / Math.max(0.01, 1 - marketDeduction)
+        const priceAtNLC = (fixedBase + closingFee) / Math.max(0.0001, 1 - marketDeduction)
 
-        // 3. Stage 3: Final Selling Price (with Profit Margin)
-        // Includes Markup on Cost (Stage 1) and cumulative Deductions on Price (Stage 2 + 3)
-        const costMarkup = 1 + totalPctOnCost / 100
-        const totalDeductionPct = (referralPct + totalPctOnMarket + totalPctOnFinal) / 100
-        const baseSellingPrice = ((fixedBase + closingFee) * costMarkup) / Math.max(0.01, 1 - totalDeductionPct)
-        const rawSellingPrice = baseSellingPrice * (1 + indirectPct / 100)
-        const sellingPrice = Math.ceil(rawSellingPrice / 5) * 5
+        // Stage 3: Final Selling Price using the accurately determined exact fees
+        const totalFinalDeductionPct = (referralPct + totalPctOnMarket + totalPctOnFinal) / 100
+        const baseSellingPrice = ((fixedBase + closingFee) * costMarkup) / Math.max(0.0001, 1 - totalFinalDeductionPct)
+        const exactSellingPrice = baseSellingPrice * (1 + indirectPct / 100)
+        
+        // MROUND final selling price to nearest 5 as well to match candidates
+        const sellingPrice = Math.round(exactSellingPrice / 5) * 5;
 
         return { shipFee, shipTotal, closingFee, referralPct, priceAtNLC, sellingPrice, useCategoryFee, useWeightFee, useAmountFee }
     }
@@ -483,15 +528,36 @@ export default function CostingMatrix() {
         if (!selectedPortal) return
         setExporting(true)
         try {
-            // Fetch all SKUs for this portal (unpaginated)
-            const { data, error } = await supabase
-                .from('v_costing_matrix')
-                .select('*')
-                .eq('portal', selectedPortal)
-                .order('sku', { ascending: true })
+            let allData = []
+            let currentFrom = 0
+            const step = 1000
+            
+            while (true) {
+                let query = supabase
+                    .from('v_costing_matrix')
+                    .select('*')
+                    .eq('portal', selectedPortal)
+                    .order('sku', { ascending: true })
+                    .range(currentFrom, currentFrom + step - 1)
 
-            if (error) throw error
-            if (!data || data.length === 0) return push('No data to export', 'warn')
+                if (activeSearch) query = query.or(`sku.ilike.%${activeSearch}%,sku_description.ilike.%${activeSearch}%`)
+                if (categoryFilter === 'UNCATEGORIZED') query = query.is('category', null)
+                else if (categoryFilter) query = query.eq('category', categoryFilter)
+
+                const { data, error } = await query
+                if (error) throw error
+                if (!data || data.length === 0) break
+                
+                allData.push(...data)
+                if (data.length < step) break
+                currentFrom += step
+            }
+
+            if (allData.length === 0) {
+                setExporting(false)
+                return push('No data to export', 'warn')
+            }
+            const data = allData
 
             // Prepare CSV Headers
             const extraLabels = settings.extra_column_labels || []
@@ -691,9 +757,8 @@ export default function CostingMatrix() {
                                                         }}
                                                         style={{ fontSize: '0.7em', padding: '2px 4px', border: '1px solid var(--border)' }}
                                                     >
-                                                        <option value="cost">on Cost</option>
                                                         <option value="market">on Market</option>
-                                                        <option value="profit">on Final</option>
+                                                        <option value="indirect">Indirect (×)</option>
                                                     </select>
                                                 )}
                                             </div>
@@ -975,8 +1040,8 @@ export default function CostingMatrix() {
 
                                     <th style={{ textAlign: 'right', background: 'var(--bg-card)' }}>Price@NLC</th>
 
-                                    {/* Dynamic Constants: Stage 3 (Profit/Final) */}
-                                    {(settings.const_fees || []).filter(f => f.unit === 'pct' && (f.target === 'profit' || f.target === 'final')).map((f, i) => (
+                                    {/* Indirect (×) fees — shown after Price@NLC */}
+                                    {(settings.const_fees || []).filter(f => f.target === 'indirect').map((f, i) => (
                                         <th key={f.label || i} style={{ textAlign: 'right' }}>{f.label}</th>
                                     ))}
                                     <th style={{ textAlign: 'right', background: 'var(--bg-alt)', fontWeight: 700 }}>Selling Price</th>
@@ -1048,8 +1113,8 @@ export default function CostingMatrix() {
                                             </td>
 
 
-                                            {/* Dynamic Data: Stage 3 (Profit/Final) */}
-                                            {(settings.const_fees || []).filter(f => f.unit === 'pct' && (f.target === 'profit' || f.target === 'final')).map((f, i) => (
+                                            {/* Indirect (×) fee values — after Price@NLC */}
+                                            {(settings.const_fees || []).filter(f => f.target === 'indirect').map((f, i) => (
                                                 <td key={f.label || i} style={{ textAlign: 'right' }}>{Number(f.value).toFixed(2)}%</td>
                                             ))}
                                             <td style={{ textAlign: 'right', fontWeight: 700, background: 'var(--bg-alt)', color: 'var(--primary)', fontSize: '1.05em' }}>
