@@ -113,6 +113,8 @@ export default function RMCostMaster() {
                 })
                 .eq('id', item.id)
             if (error) throw error
+            // Auto sync NLC
+            await supabase.rpc('sync_all_nlc_costs')
             push(`Saved: ${item.rm_name}`, 'ok')
         } catch (err) {
             push(err.message, 'err')
@@ -136,6 +138,8 @@ export default function RMCostMaster() {
                 gst_pct: Number(newItem.gst_pct) || 0
             }, { onConflict: 'rm_name' })
         if (error) return push(error.message, 'err')
+        // Auto sync NLC
+        await supabase.rpc('sync_all_nlc_costs')
         push('Item saved!', 'ok')
         setNewItem({ rm_name: '', cost_per_kg: '', profit_pct: '', gst_pct: '5' })
         load(activeSearch)
@@ -145,6 +149,8 @@ export default function RMCostMaster() {
         if (!confirm(`Delete "${name}"?`)) return
         const { error } = await supabase.from('rm_cost_per_kg').delete().eq('id', id)
         if (error) return push(error.message, 'err')
+        // Auto sync NLC
+        await supabase.rpc('sync_all_nlc_costs')
         push('Deleted', 'ok')
         setCosts(prev => prev.filter(c => c.id !== id))
     }

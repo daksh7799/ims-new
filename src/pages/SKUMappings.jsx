@@ -204,6 +204,9 @@ export default function SKUMappings() {
                 if (error) throw error
             }
 
+            // Auto sync NLC
+            await supabase.rpc('sync_all_nlc_costs')
+
             push(`Configured ${skuList.length} SKUs for ${bulkMeta.portal} successfully!`, 'ok')
             setSelectedSkus(new Set())
             load()
@@ -282,6 +285,9 @@ export default function SKUMappings() {
                 )
 
             if (err2) throw err2
+
+            // Auto sync NLC
+            await supabase.rpc('sync_all_nlc_costs')
 
             push('SKU mapping created!', 'ok')
             setSku('')
@@ -377,6 +383,9 @@ export default function SKUMappings() {
                 )
 
             if (err3) throw err3
+
+            // Auto sync NLC
+            await supabase.rpc('sync_all_nlc_costs')
 
             push('SKU mapping updated!', 'ok')
             cancelEdit()
@@ -533,6 +542,9 @@ export default function SKUMappings() {
             } else {
                 push(`Successfully assigned ${successCount} portal mappings!`, 'ok')
             }
+
+            // Auto sync NLC
+            await supabase.rpc('sync_all_nlc_costs')
 
             load()
         } catch (err) {
@@ -900,6 +912,9 @@ export default function SKUMappings() {
             } else {
                 push(successMsg, 'ok')
             }
+
+            // Auto sync NLC
+            await supabase.rpc('sync_all_nlc_costs')
 
             load()
         } catch (err) {
