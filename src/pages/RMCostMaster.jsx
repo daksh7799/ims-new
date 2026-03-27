@@ -1,6 +1,7 @@
 import { useEffect, useState, useCallback, useRef } from 'react'
 import { supabase } from '../supabaseClient'
 import { useToast } from '../ui/toast'
+import { downloadCSV } from '../utils/csv'
 
 export default function RMCostMaster() {
     const { push } = useToast()
@@ -27,13 +28,17 @@ export default function RMCostMaster() {
                 { data: allCosts },
                 { data: checkedRates },
                 { data: blendsList },
-                { data: blendRecipes }
+                { data: blendRecipes },
+                { data: activeRMs }
             ] = await Promise.all([
                 supabase.from('rm_cost_per_kg').select('rm_name, cost_per_kg'),
                 supabase.from('v_checked_rm_rates').select('*'),
                 supabase.from('v_blends_list').select('*').eq('is_active', true),
-                supabase.from('v_blend_recipe_for_output').select('*')
+                supabase.from('v_blend_recipe_for_output').select('*'),
+                supabase.from('raw_materials').select('name').eq('is_active', true)
             ])
+
+            const activeNames = new Set((activeRMs || []).map(r => (r.name || '').trim().toLowerCase()))
 
             // Build map of actual rm_cost_per_kg entries
             const costMap = new Map((allCosts || []).map(c => [(c.rm_name || '').trim().toLowerCase(), Number(c.cost_per_kg) || 0]))
@@ -68,7 +73,9 @@ export default function RMCostMaster() {
                 }
             }
 
-            const merged = (data || []).map(c => {
+            const merged = (data || [])
+                .filter(c => activeNames.has((c.rm_name || '').trim().toLowerCase()))
+                .map(c => {
                 const key = (c.rm_name || '').trim().toLowerCase()
                 let refPrice = 0
                 let isBlend = false
@@ -155,6 +162,30 @@ export default function RMCostMaster() {
         setCosts(prev => prev.filter(c => c.id !== id))
     }
 
+    function handleExport() {
+        const headers = [
+            'Item Name',
+            'Ref Price (₹)',
+            'GST %',
+            'Ref Total (₹)',
+            'Base Cost (₹)',
+            'Profit %',
+            'Effective Cost/kg (₹)'
+        ]
+
+        const rows = costs.map(c => ({
+            'Item Name': c.rm_name,
+            'Ref Price (₹)': Number(c.ref_price || 0).toFixed(2),
+            'GST %': c.gst_pct,
+            'Ref Total (₹)': (Number(c.ref_price || 0) * (1 + (c.gst_pct || 0) / 100)).toFixed(2),
+            'Base Cost (₹)': Number(c.cost_per_kg || 0).toFixed(2),
+            'Profit %': c.profit_pct,
+            'Effective Cost/kg (₹)': (Number(c.cost_per_kg || 0) * (1 + (Number(c.profit_pct) || 0) / 100)).toFixed(2)
+        }))
+
+        downloadCSV(`RM_Cost_Master_${new Date().toISOString().split('T')[0]}.csv`, rows, headers)
+    }
+
     return (
         <div className="grid">
             {/* Add new item */}
@@ -218,6 +249,9 @@ export default function RMCostMaster() {
                             style={{ width: 280 }}
                         />
                         <span className="badge">{costs.length} items</span>
+                        <button className="btn small outline" onClick={handleExport} disabled={costs.length === 0}>
+                            Export CSV
+                        </button>
                     </div>
 
                     {/* Table */}
