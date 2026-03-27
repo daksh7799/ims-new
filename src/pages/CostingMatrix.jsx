@@ -32,7 +32,8 @@ export default function CostingMatrix() {
         label_gst_shipping: 'GST on Ship %',
         label_extra_fixed: 'Extra Fx',
         label_extra_percent: 'Extra %',
-        has_category_fees: true
+        has_category_fees: true,
+        shipping_cost_pct: 100
     })
     const [savingSettings, setSavingSettings] = useState(false)
 
@@ -111,7 +112,8 @@ export default function CostingMatrix() {
             setSettings({
                 ...settingsRes.data,
                 const_fees: settingsRes.data.const_fees || [],
-                extra_column_labels: settingsRes.data.extra_column_labels || []
+                extra_column_labels: settingsRes.data.extra_column_labels || [],
+                shipping_cost_pct: settingsRes.data.shipping_cost_pct != null ? Number(settingsRes.data.shipping_cost_pct) : 100
             })
         } else {
             // Default settings for new portal
@@ -225,7 +227,8 @@ export default function CostingMatrix() {
         const useAmountFee = settings.has_closing_fees && row.is_amount_fee !== false
 
         const shipFee = useWeightFee ? getShippingFee(weightKg) : 0
-        const shipTotal = shipFee
+        const shippingCostPct = settings.shipping_cost_pct != null ? Number(settings.shipping_cost_pct) : 100
+        const shipTotal = shipFee * shippingCostPct / 100
 
         // Stage 1: Fixed Cost Base (NLC + Rupee Fees + Shipping)
         const fixedBase = nlc + totalFlat + shipTotal
@@ -236,7 +239,7 @@ export default function CostingMatrix() {
         let referralPct = 0
 
         let validCandidates = [];
-        
+
         const activeClosingSlabs = useAmountFee && closingSlabs.length > 0 ? closingSlabs : [{ max_price: 9999999, fee: 0 }];
         const catFees = referralFees.filter(r => r.category === category);
         const activeReferralSlabs = useCategoryFee && catFees.length > 0 ? catFees : [{ max_price: 9999999, referral_pct: 0 }];
@@ -246,26 +249,26 @@ export default function CostingMatrix() {
             activeReferralSlabs.forEach((rItem, rIdx) => {
                 const cFee = Number(cItem.fee) || 0;
                 const rPct = Number(rItem.referral_pct) || 0;
-                
+
                 const totalDeductionPct = (rPct + totalPctOnMarket + totalPctOnFinal) / 100;
                 const divisor = Math.max(0.0001, 1 - totalDeductionPct);
-                
+
                 const baseSP = ((fixedBase + cFee) * costMarkup) / divisor;
                 const exactSP = baseSP * (1 + indirectPct / 100);
-                
+
                 // MROUND to nearest 5 (just like Excel MROUND)
                 const rawSP = Math.round(exactSP / 5) * 5;
-                
+
                 // Determine limits for these specific slabs
                 const cMin = cIdx === 0 ? 0 : activeClosingSlabs[cIdx - 1].max_price;
                 const cMax = cItem.max_price;
-                
+
                 const rMin = rIdx === 0 ? 0 : activeReferralSlabs[rIdx - 1].max_price;
                 const rMax = rItem.max_price;
-                
+
                 const validClosing = !useAmountFee || (rawSP > cMin && rawSP <= cMax);
                 const validReferral = !useCategoryFee || (rawSP > rMin && rawSP <= rMax);
-                
+
                 if (validClosing && validReferral) {
                     validCandidates.push({
                         sellingPrice: rawSP,
@@ -296,7 +299,7 @@ export default function CostingMatrix() {
         const totalFinalDeductionPct = (referralPct + totalPctOnMarket + totalPctOnFinal) / 100
         const baseSellingPrice = ((fixedBase + closingFee) * costMarkup) / Math.max(0.0001, 1 - totalFinalDeductionPct)
         const exactSellingPrice = baseSellingPrice * (1 + indirectPct / 100)
-        
+
         // MROUND final selling price to nearest 5 as well to match candidates
         const sellingPrice = Math.round(exactSellingPrice / 5) * 5;
 
@@ -315,7 +318,8 @@ export default function CostingMatrix() {
                     extra_column_labels: settings.extra_column_labels || [],
                     has_category_fees: Boolean(settings.has_category_fees),
                     has_shipping_fees: Boolean(settings.has_shipping_fees),
-                    has_closing_fees: Boolean(settings.has_closing_fees)
+                    has_closing_fees: Boolean(settings.has_closing_fees),
+                    shipping_cost_pct: Number(settings.shipping_cost_pct) || 100
                 }, { onConflict: 'portal' })
             if (error) throw error
             push('Portal settings saved!', 'ok')
@@ -531,7 +535,7 @@ export default function CostingMatrix() {
             let allData = []
             let currentFrom = 0
             const step = 1000
-            
+
             while (true) {
                 let query = supabase
                     .from('v_costing_matrix')
@@ -547,7 +551,7 @@ export default function CostingMatrix() {
                 const { data, error } = await query
                 if (error) throw error
                 if (!data || data.length === 0) break
-                
+
                 allData.push(...data)
                 if (data.length < step) break
                 currentFrom += step
@@ -882,7 +886,20 @@ export default function CostingMatrix() {
                         {/* Shipping slabs */}
                         <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 20, marginBottom: 16 }}>
                             <div>
-                                <h5 style={{ margin: '0 0 6px' }}>Shipping Slabs</h5>
+                                <div style={{ display: 'flex', alignItems: 'center', gap: 12, marginBottom: 8 }}>
+                                    <h5 style={{ margin: 0 }}>Shipping Slabs</h5>
+                                    <label style={{ display: 'flex', alignItems: 'center', gap: 6, fontSize: '0.85em' }}>
+                                        Add
+                                        <input
+                                            type="number"
+                                            min="0" max="100" step="1"
+                                            value={settings.shipping_cost_pct ?? 100}
+                                            onChange={e => setSettings(s => ({ ...s, shipping_cost_pct: e.target.value }))}
+                                            style={{ width: 60, padding: '3px 6px' }}
+                                        />
+                                        % of ship fee to price
+                                    </label>
+                                </div>
                                 <div style={{ maxHeight: 250, overflow: 'auto' }}>
                                     <table className="table" style={{ fontSize: '0.85em' }}>
                                         <thead><tr><th>Up to (g)</th><th>Fee (₹)</th><th></th></tr></thead>
