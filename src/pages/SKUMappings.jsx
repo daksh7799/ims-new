@@ -753,7 +753,7 @@ export default function SKUMappings() {
             })
 
             // 4. Generate dynamic headers
-            const headers = ['SKU & Description']
+            const headers = ['SKU', 'Description']
             for (let i = 1; i <= maxItems; i++) {
                 headers.push(`Finished Good ${i}`)
                 headers.push(`Qty per SKU ${i}`)
@@ -761,8 +761,7 @@ export default function SKUMappings() {
 
             // 5. Generate rows
             const rows = allSkuData.map(s => {
-                const skuDisplay = `"${s.sku}${s.description ? ' - ' + s.description : ''}"`
-                const row = [skuDisplay]
+                const row = [`"${s.sku}"`, `"${s.description || ''}"`]
                 const items = itemsBySku[s.sku] || []
                 
                 for (let i = 0; i < maxItems; i++) {
@@ -784,6 +783,146 @@ export default function SKUMappings() {
 
         } catch (err) {
             console.error('Pivoted export error:', err)
+            push(err.message, 'err')
+        }
+    }
+
+    async function exportMasterSKUBOM() {
+        try {
+            push('Generating Master SKU-BOM export...', 'ok')
+
+            // 1. Fetch SKUs
+            let allSkuData = []
+            let skuOffset = 0
+            while (true) {
+                const { data, error } = await supabase.from('sku_mappings').select('*').order('sku').range(skuOffset, skuOffset + 999)
+                if (error) throw error
+                if (!data || data.length === 0) break
+                allSkuData = allSkuData.concat(data)
+                if (data.length < 1000) break
+                skuOffset += 1000
+            }
+
+            // 2. Fetch Mapping Items
+            let allMappingItems = []
+            let itemOffset = 0
+            while (true) {
+                const { data, error } = await supabase.from('sku_mapping_items').select('*, finished_goods(name)').range(itemOffset, itemOffset + 999)
+                if (error) throw error
+                if (!data || data.length === 0) break
+                allMappingItems = allMappingItems.concat(data)
+                if (data.length < 1000) break
+                itemOffset += 1000
+            }
+
+            // 2.5 Fetch all Raw Materials to avoid relationship issues
+            let allRMs = []
+            let rmOffset = 0
+            while (true) {
+                const { data, error } = await supabase.from('raw_materials').select('id, name, accounting_name').range(rmOffset, rmOffset + 999)
+                if (error) throw error
+                if (!data || data.length === 0) break
+                allRMs = allRMs.concat(data)
+                if (data.length < 1000) break
+                rmOffset += 1000
+            }
+            const rmMap = {}
+            allRMs.forEach(r => rmMap[r.id] = r)
+
+            // 3. Fetch BOMs
+            let allBomData = []
+            let bomOffset = 0
+            while (true) {
+                // Fetch from bom table directly using raw_material_id to join in-memory
+                const { data, error } = await supabase
+                    .from('bom')
+                    .select('finished_good_id, raw_material_id, qty_per_unit')
+                    .range(bomOffset, bomOffset + 999)
+                
+                if (error) throw error
+                if (!data || data.length === 0) break
+                allBomData = allBomData.concat(data)
+                if (data.length < 1000) break
+                bomOffset += 1000
+            }
+
+            // 4. Organize Data
+            const itemsBySku = {}
+            allMappingItems.forEach(item => {
+                if (!itemsBySku[item.sku]) itemsBySku[item.sku] = []
+                itemsBySku[item.sku].push(item)
+            })
+
+            const bomByFg = {}
+            allBomData.forEach(b => {
+                if (!bomByFg[b.finished_good_id]) bomByFg[b.finished_good_id] = []
+                bomByFg[b.finished_good_id].push(b)
+            })
+
+            // 5. Calculate Maxes for Header
+            let maxFGsPerSKU = 0
+            let maxRMsPerFG = 0
+            
+            allSkuData.forEach(s => {
+                const items = itemsBySku[s.sku] || []
+                if (items.length > maxFGsPerSKU) maxFGsPerSKU = items.length
+                items.forEach(item => {
+                    const rms = bomByFg[item.finished_good_id] || []
+                    if (rms.length > maxRMsPerFG) maxRMsPerFG = rms.length
+                })
+            })
+
+            // 6. Headers
+            const headers = ['SKU', 'Description']
+            for (let i = 1; i <= maxFGsPerSKU; i++) {
+                headers.push(`Finished Good ${i}`, `Qty per SKU ${i}`)
+                for (let j = 1; j <= maxRMsPerFG; j++) {
+                    headers.push(`RM ${i}-${j}`, `Qty ${i}-${j}`)
+                }
+            }
+
+            // 7. Rows
+            const rows = allSkuData.map(s => {
+                const row = [`"${s.sku}"`, `"${s.description || ''}"`]
+                const items = itemsBySku[s.sku] || []
+                for (let i = 0; i < maxFGsPerSKU; i++) {
+                    const item = items[i]
+                    if (item) {
+                        row.push(`"${item.finished_goods?.name || ''}"`)
+                        row.push(item.qty_per_sku)
+                        const rms = bomByFg[item.finished_good_id] || []
+                        for (let j = 0; j < maxRMsPerFG; j++) {
+                            const rm = rms[j]
+                            if (rm) {
+                                // Get RM details from map
+                                const rawMat = rmMap[rm.raw_material_id]
+                                // Use accounting_name if available, else fallback to name
+                                const rmName = rawMat?.accounting_name || rawMat?.name || 'Unknown'
+                                // Calculate total quantity: Qty per SKU * Qty per unit of FG
+                                const totalQty = (Number(item.qty_per_sku) || 0) * (Number(rm.qty_per_unit) || 0)
+                                
+                                row.push(`"${rmName}"`)
+                                row.push(totalQty)
+                            } else {
+                                row.push('""', '""')
+                            }
+                        }
+                    } else {
+                        row.push('""', '""')
+                        for (let j = 0; j < maxRMsPerFG; j++) {
+                            row.push('""', '""')
+                        }
+                    }
+                }
+                return row.join(',')
+            })
+
+            const csvContent = [headers.join(','), ...rows].join('\n')
+            const blob = new Blob([csvContent], { type: 'text/csv;charset=utf-8;' })
+            saveAs(blob, `master_sku_bom_export_${new Date().toISOString().split('T')[0]}.csv`)
+            push(`Exported ${allSkuData.length} SKUs in Master format`, 'ok')
+        } catch (err) {
+            console.error(err)
             push(err.message, 'err')
         }
     }
@@ -1101,6 +1240,7 @@ export default function SKUMappings() {
                     {/* Export Section */}
                     <div style={{ paddingBottom: 12, borderBottom: '1px solid var(--border)' }}>
                         <div className="row" style={{ gap: 8, marginBottom: 8 }}>
+                            <button className="btn outline" onClick={exportMasterSKUBOM}>📦 Download Master SKU-BOM</button>
                             <button className="btn" onClick={exportCurrentSKUs}>📤 Export Flat CSV</button>
                             <button className="btn" onClick={exportPivotedSKUs} style={{ background: 'var(--success)', borderColor: 'var(--success)' }}>📊 Download Detailed CSV (Pivoted)</button>
                             <button className="btn ghost" onClick={downloadSampleCSV}>📄 Download Sample CSV</button>
