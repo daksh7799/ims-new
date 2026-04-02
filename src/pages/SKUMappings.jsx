@@ -683,6 +683,111 @@ export default function SKUMappings() {
         }
     }
 
+    async function exportPivotedSKUs() {
+        try {
+            push('Generating detailed pivoted export...', 'ok')
+
+            // 1. Fetch SKUs (Chunked)
+            let allSkuData = []
+            let skuOffset = 0
+            const SKU_FETCH_SIZE = 1000
+            let hasMoreSKUs = true
+
+            let baseQuery = supabase.from('sku_mappings').select('*').order('sku', { ascending: true })
+            if (q.trim()) {
+                const searchTerm = `%${q.trim()}%`
+                baseQuery = baseQuery.ilike('sku', searchTerm)
+            }
+
+            while (hasMoreSKUs) {
+                const { data: skuChunk, error: skuErr } = await baseQuery.range(skuOffset, skuOffset + SKU_FETCH_SIZE - 1)
+                if (skuErr) throw skuErr
+                if (skuChunk && skuChunk.length > 0) {
+                    allSkuData = allSkuData.concat(skuChunk)
+                    skuOffset += SKU_FETCH_SIZE
+                    if (skuChunk.length < SKU_FETCH_SIZE) hasMoreSKUs = false
+                } else {
+                    hasMoreSKUs = false
+                }
+            }
+
+            if (allSkuData.length === 0) return push('No SKU mappings to export', 'warn')
+
+            // 2. Fetch mapping items (Chunked)
+            const skuSet = new Set(allSkuData.map(s => s.sku))
+            let allItemsData = []
+            let currentOffset = 0
+            let hasMore = true
+            const ROWS_PER_FETCH = 1000
+
+            push(`Fetching mapping items...`, 'ok')
+            while (hasMore) {
+                const { data: chunkItems, error: chunkErr } = await supabase
+                    .from('sku_mapping_items')
+                    .select('*, finished_goods(id, name)')
+                    .order('sku')
+                    .order('id')
+                    .range(currentOffset, currentOffset + ROWS_PER_FETCH - 1)
+
+                if (chunkErr) throw chunkErr
+                if (chunkItems && chunkItems.length > 0) {
+                    const filteredItems = chunkItems.filter(item => skuSet.has(item.sku))
+                    allItemsData = allItemsData.concat(filteredItems)
+                    currentOffset += ROWS_PER_FETCH
+                    if (chunkItems.length < ROWS_PER_FETCH) hasMore = false
+                } else {
+                    hasMore = false
+                }
+            }
+
+            // 3. Group by SKU and determine max columns
+            const itemsBySku = {}
+            let maxItems = 0
+            allItemsData.forEach(item => {
+                if (!itemsBySku[item.sku]) itemsBySku[item.sku] = []
+                itemsBySku[item.sku].push({
+                    name: item.finished_goods?.name || 'Unknown',
+                    qty: item.qty_per_sku
+                })
+                if (itemsBySku[item.sku].length > maxItems) maxItems = itemsBySku[item.sku].length
+            })
+
+            // 4. Generate dynamic headers
+            const headers = ['SKU & Description']
+            for (let i = 1; i <= maxItems; i++) {
+                headers.push(`Finished Good ${i}`)
+                headers.push(`Qty per SKU ${i}`)
+            }
+
+            // 5. Generate rows
+            const rows = allSkuData.map(s => {
+                const skuDisplay = `"${s.sku}${s.description ? ' - ' + s.description : ''}"`
+                const row = [skuDisplay]
+                const items = itemsBySku[s.sku] || []
+                
+                for (let i = 0; i < maxItems; i++) {
+                    if (items[i]) {
+                        row.push(`"${items[i].name}"`)
+                        row.push(items[i].qty)
+                    } else {
+                        row.push('""')
+                        row.push('""')
+                    }
+                }
+                return row.join(',')
+            })
+
+            const csvContent = [headers.join(','), ...rows].join('\n')
+            const blob = new Blob([csvContent], { type: 'text/csv;charset=utf-8;' })
+            saveAs(blob, `sku_mappings_pivoted_${new Date().toISOString().split('T')[0]}.csv`)
+            push(`Exported ${allSkuData.length} SKUs in pivoted format`, 'ok')
+
+        } catch (err) {
+            console.error('Pivoted export error:', err)
+            push(err.message, 'err')
+        }
+    }
+
     async function onBulkImport(e) {
         const f = e.target.files?.[0]
         if (!f) return
@@ -996,7 +1101,8 @@ export default function SKUMappings() {
                     {/* Export Section */}
                     <div style={{ paddingBottom: 12, borderBottom: '1px solid var(--border)' }}>
                         <div className="row" style={{ gap: 8, marginBottom: 8 }}>
-                            <button className="btn" onClick={exportCurrentSKUs}>📥 Export to CSV</button>
+                            <button className="btn" onClick={exportCurrentSKUs}>📤 Export Flat CSV</button>
+                            <button className="btn" onClick={exportPivotedSKUs} style={{ background: 'var(--success)', borderColor: 'var(--success)' }}>📊 Download Detailed CSV (Pivoted)</button>
                             <button className="btn ghost" onClick={downloadSampleCSV}>📄 Download Sample CSV</button>
                         </div>
                         <div className="s" style={{ color: 'var(--muted)' }}>
