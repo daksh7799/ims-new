@@ -1,1 +1,213 @@
+// src/App.jsx
+import { BrowserRouter, Routes, Route, NavLink } from 'react-router-dom'
+import { useState } from 'react'
+import { supabase } from './supabaseClient'
+import useSessionProfile from './auth/useSessionProfile'
+import Login from './auth/Login.jsx'
+import ThemeToggle from './ui/ThemeToggle.jsx'
+
+// Pages
+import Dashboard from './pages/Dashboard.jsx'
+import RawInward from './pages/RawInward.jsx'
+import BOM from './pages/BOM.jsx'
+import Manufacture from './pages/Manufacture.jsx'
+import ManufacturingOrders from './pages/ManufacturingOrders.jsx' // 👈 MO System
+import LiveBarcodes from './pages/LiveBarcodes.jsx'
+import Putaway from './pages/Putaway.jsx'
+import BinInventory from './pages/BinInventory.jsx'
+import SalesOrders from './pages/SalesOrders.jsx'
+import Outward from './pages/Outward.jsx'
+import Returns from './pages/Returns.jsx'
+import RMInventory from './pages/RMInventory.jsx'
+import FGInventory from './pages/FGInventory.jsx'
+import Labels from './pages/Labels.jsx'
+import BlendRecipes from './pages/BlendRecipes.jsx'
+import BlendManufacture from './pages/BlendManufacture.jsx'
+import BillCheck from './pages/BillCheck.jsx' // 👈 NEW MODULE
+import Ledger from './pages/Ledger.jsx' // 👈 NEW MODULE
+
+// Admin
+import AdminUsers from './admin/AdminUsers.jsx'
+import AdminMasters from './pages/AdminMasters.jsx'
+
+// New tools
+import PacketTrace from './pages/PacketTrace.jsx'
+import RawAdjust from './pages/RawAdjust.jsx'
+import SOAdmin from './pages/SOAdmin.jsx'
+import RawProcess from './pages/RawProcess.jsx'
+import FgSalesReport from './pages/FgSalesReport.jsx'
+import RawInwardReport from './pages/RawInwardReport.jsx'
+import DailyStockReport from './pages/DailyStockReport.jsx';
+import SKUMappings from './pages/SKUMappings.jsx' // 👈 SKU Mapping System
+import RawConsumed from './pages/RawConsumed.jsx' // 👈 NEW MODULE
+import Consignment from './pages/Consignment.jsx' // 👈 NEW MODULE
+import NLCMatrix from './pages/NLCMatrix.jsx' // 👈 NEW MODULE
+import CostingMatrix from './pages/CostingMatrix.jsx' // 👈 NEW MODULE
+import RMCostMaster from './pages/RMCostMaster.jsx' // 👈 NEW MODULE
+import QuarterlyStockAudit from './pages/QuarterlyStockAudit.jsx'
+
+
+// Stock check UI (route only; not in sidebar)
+import DailyStockCheck from './components/DailyStockCheck.jsx'
+
+// Gate wrapper for manufacture route
+import ManufacturingGate from './components/ManufacturingGate.jsx'
+
+const LINKS = [
+  { key: 'dashboard', path: '/', label: 'Dashboard', end: true },
+  { key: 'raw', path: '/raw', label: 'Raw Inward' },
+  { key: 'mfg', path: '/mfg', label: 'Manufacture' },
+  { key: 'mo-admin', path: '/mo-admin', label: 'Pending Production' }, // 👈 NEW MODULE
+  { key: 'live', path: '/live', label: 'Live Barcodes' },
+  { key: 'putaway', path: '/putaway', label: 'Bins (Putaway)' },
+  { key: 'bin-inv', path: '/bin-inv', label: 'Bin Inventory' },
+  { key: 'sales', path: '/sales', label: 'Sales Orders' },
+  { key: 'outward', path: '/outward', label: 'Outward (SO Clearing)' },
+  { key: 'returns', path: '/returns', label: 'Returns' },
+  { key: 'inv-rm', path: '/inv-rm', label: 'RM Inventory' },
+  { key: 'inv-fg', path: '/inv-fg', label: 'FG Inventory' },
+  { key: 'blend-mfg', path: '/blend-manufacture', label: 'Blend Manufacture' },
+  { key: 'raw-process', path: '/raw-process', label: 'Raw Process' },
+  { key: 'bill-check', path: '/bill-check', label: 'Bill Check' },
+  { key: 'ledger', path: '/ledger', label: 'Ledger' }, // 👈 ADDED HERE
+  // utilities
+  { key: 'trace', path: '/trace', label: 'Packet Trace' },
+  { key: 'raw-adjust', path: '/raw-adjust', label: 'Raw Adjust' },
+  { key: 'so-admin', path: '/so-admin', label: 'SO Admin' },
+  { key: 'fg-sales', path: '/fg-sales', label: 'FG Sales Report' },
+  { key: 'daily-report', path: '/daily-report', label: 'Daily Stock Report' }, // ← add this
+  { key: 'quarterly-audit', path: '/quarterly-audit', label: 'Quarterly Audit' }, // 👈 NEW MODULE
+  { key: 'raw-inward-report', path: '/raw-inward-report', label: 'Raw Inward Report' }, // ← add this
+  { key: 'raw-consumed', path: '/raw-consumed', label: 'Raw Consumed' },
+  // admin
+  { key: 'masters', path: '/masters', label: 'Masters' },
+  { key: 'admin', path: '/admin', label: 'Admin' },
+  { key: 'sku-mappings', path: '/sku-mappings', label: 'SKU Mappings' },
+  { key: 'bom', path: '/bom', label: 'BOM' },// 👈 NEW MODULE
+  { key: 'blends', path: '/blends', label: 'Blend Recipes' },
+  { key: 'consignment', path: '/consignment', label: 'Consignment' },
+  { key: 'nlc-matrix', path: '/nlc-matrix', label: 'NLC Matrix' },
+  { key: 'costing-matrix', path: '/costing-matrix', label: 'Costing Matrix' },
+  { key: 'rm-cost-master', path: '/rm-cost-master', label: 'RM Cost Master' },
+]
+
+export default function App() {
+  const { session, profile, loading } = useSessionProfile()
+  const [mobileOpen, setMobileOpen] = useState(false)
+
+  if (loading) return <div className="s" style={{ padding: 20 }}>Loading…</div>
+  if (!session) return <Login />
+
+  const allowed = new Set(profile?.allowed_modules || [])
+  const isAdmin = (profile?.role === 'admin')
+  const canSee = (key) => isAdmin || allowed.has(key)
+
+  return (
+    <BrowserRouter>
+      <div className="container">
+        {/* Mobile Header */}
+        <header className="mobile-header">
+          <div className="brand"><span className="dot"></span> IMS</div>
+          <button className="hamburger" onClick={() => setMobileOpen(!mobileOpen)}>
+            {mobileOpen ? '✕' : '☰'}
+          </button>
+        </header>
+
+        <aside className={`sidebar ${mobileOpen ? 'open' : ''}`}>
+          <div className="brand desktop-only"><span className="dot"></span> IMS</div>
+
+          <nav className="nav">
+            {LINKS.filter(l => canSee(l.key)).map(l => (
+              <NavLink
+                key={l.key}
+                to={l.path}
+                end={l.end}
+                onClick={() => setMobileOpen(false)}
+              >
+                {l.label}
+              </NavLink>
+            ))}
+          </nav>
+
+          <div style={{ marginTop: 'auto', display: 'grid', gap: 8 }}>
+            <div className="s">{profile?.full_name || session.user.email}</div>
+            <span className="badge">{profile?.role || 'viewer'}</span>
+            <button
+              className="btn outline small"
+              onClick={() => supabase.auth.signOut().then(() => window.location.reload())}
+            >
+              Sign out
+            </button>
+            <ThemeToggle />
+          </div>
+        </aside>
+
+        <main>
+          <Routes>
+            {/* Keep Labels route public (used by LiveBarcodes etc.) */}
+            <Route path="/labels" element={<Labels />} />
+
+            {/* Visible pages (only mount if link is visible) */}
+            {canSee('dashboard') && <Route path="/" element={<Dashboard />} />}
+            {canSee('raw') && <Route path="/raw" element={<RawInward />} />}
+            {canSee('bom') && <Route path="/bom" element={<BOM />} />}
+
+            {/* Manufacture route wrapped with ManufacturingGate to enforce daily check */}
+            {canSee('mfg') && (
+              <Route
+                path="/mfg"
+                element={
+                  <ManufacturingGate>
+                    <Manufacture />
+                  </ManufacturingGate>
+                }
+              />
+            )}
+
+            {canSee('live') && <Route path="/live" element={<LiveBarcodes />} />}
+            {canSee('putaway') && <Route path="/putaway" element={<Putaway />} />}
+            {canSee('bin-inv') && <Route path="/bin-inv" element={<BinInventory />} />}
+            {canSee('sales') && <Route path="/sales" element={<SalesOrders />} />}
+            {canSee('outward') && <Route path="/outward" element={<Outward />} />}
+            {canSee('returns') && <Route path="/returns" element={<Returns />} />}
+            {canSee('inv-rm') && <Route path="/inv-rm" element={<RMInventory />} />}
+            {canSee('inv-fg') && <Route path="/inv-fg" element={<FGInventory />} />}
+            {canSee('blends') && <Route path="/blends" element={<BlendRecipes />} />}
+            {canSee('blend-mfg') && <Route path="/blend-manufacture" element={<BlendManufacture />} />}
+            {canSee('ledger') && <Route path="/ledger" element={<Ledger />} />}
+
+
+            {canSee('trace') && <Route path="/trace" element={<PacketTrace />} />}
+            {canSee('raw-adjust') && <Route path="/raw-adjust" element={<RawAdjust />} />}
+            {canSee('so-admin') && <Route path="/so-admin" element={<SOAdmin />} />}
+            {canSee('raw-process') && <Route path="/raw-process" element={<RawProcess />} />}
+            {canSee('fg-sales') && <Route path="/fg-sales" element={<FgSalesReport />} />}
+
+            {canSee('masters') && <Route path="/masters" element={<AdminMasters />} />}
+            {canSee('admin') && <Route path="/admin" element={<AdminUsers />} />}
+            {canSee('raw-inward-report') && <Route path="/raw-inward-report" element={<RawInwardReport />} />}
+            {canSee('daily-report') && (<Route path="/daily-report" element={<DailyStockReport />} />)}
+            {canSee('bill-check') && <Route path="/bill-check" element={<BillCheck />} />}
+            {canSee('sku-mappings') && <Route path="/sku-mappings" element={<SKUMappings />} />}
+            {canSee('raw-consumed') && <Route path="/raw-consumed" element={<RawConsumed />} />}
+            {canSee('mo-admin') && <Route path="/mo-admin" element={<ManufacturingOrders />} />}
+            {canSee('consignment') && <Route path="/consignment" element={<Consignment />} />}
+            {canSee('nlc-matrix') && <Route path="/nlc-matrix" element={<NLCMatrix />} />}
+            {canSee('costing-matrix') && <Route path="/costing-matrix" element={<CostingMatrix />} />}
+            {canSee('rm-cost-master') && <Route path="/rm-cost-master" element={<RMCostMaster />} />}
+            {canSee('quarterly-audit') && <Route path="/quarterly-audit" element={<QuarterlyStockAudit />} />}
+
+            {/* Keep DailyStockCheck as a route if you want direct access (optional).
+                It's not included in the sidebar links above, so it won't show there.
+            */}
+            {canSee('daily-check') && <Route path="/daily-check" element={<DailyStockCheck />} />}
+
+            {/* fallback */}
+            <Route path="*" element={<div style={{ padding: 20 }}>Not found or access denied.</div>} />
+          </Routes>
+        </main>
+      </div>
+    </BrowserRouter>
+  )
+}
 
