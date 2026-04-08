@@ -41,9 +41,6 @@ import DailyStockReport from './pages/DailyStockReport.jsx';
 import SKUMappings from './pages/SKUMappings.jsx' // 👈 SKU Mapping System
 import RawConsumed from './pages/RawConsumed.jsx' // 👈 NEW MODULE
 import Consignment from './pages/Consignment.jsx' // 👈 NEW MODULE
-import NLCMatrix from './pages/NLCMatrix.jsx' // 👈 NEW MODULE
-import CostingMatrix from './pages/CostingMatrix.jsx' // 👈 NEW MODULE
-import RMCostMaster from './pages/RMCostMaster.jsx' // 👈 NEW MODULE
 
 // Stock check UI (route only; not in sidebar)
 import DailyStockCheck from './components/DailyStockCheck.jsx'
@@ -83,9 +80,6 @@ const LINKS = [
   { key: 'bom', path: '/bom', label: 'BOM' },// 👈 NEW MODULE
   { key: 'blends', path: '/blends', label: 'Blend Recipes' },
   { key: 'consignment', path: '/consignment', label: 'Consignment' },
-  { key: 'nlc-matrix', path: '/nlc-matrix', label: 'NLC Matrix' },
-  { key: 'costing-matrix', path: '/costing-matrix', label: 'Costing Matrix' },
-  { key: 'rm-cost-master', path: '/rm-cost-master', label: 'RM Cost Master' },
 ]
 
 export default function App() {
@@ -189,9 +183,7 @@ export default function App() {
             {canSee('raw-consumed') && <Route path="/raw-consumed" element={<RawConsumed />} />}
             {canSee('mo-admin') && <Route path="/mo-admin" element={<ManufacturingOrders />} />}
             {canSee('consignment') && <Route path="/consignment" element={<Consignment />} />}
-            {canSee('nlc-matrix') && <Route path="/nlc-matrix" element={<NLCMatrix />} />}
-            {canSee('costing-matrix') && <Route path="/costing-matrix" element={<CostingMatrix />} />}
-            {canSee('rm-cost-master') && <Route path="/rm-cost-master" element={<RMCostMaster />} />}
+      
 
             {/* Keep DailyStockCheck as a route if you want direct access (optional).
                 It's not included in the sidebar links above, so it won't show there.
