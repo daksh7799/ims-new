@@ -69,11 +69,11 @@ export default function LiveBarcodes() {
       if (fromDate) baseQuery = baseQuery.gte("produced_at", fromDate);
       if (toDate) baseQuery = baseQuery.lte("produced_at", toDate);
 
-      // SEARCH (FAST PREFIX)
+      // SEARCH
       if (q.trim()) {
-        const term = `${q.trim()}%`;
+        const term = `%${q.trim()}%`;
         baseQuery = baseQuery.or(
-          `packet_code.ilike.${term},finished_good_name.ilike.${term}`
+          `packet_code.ilike.${term},finished_good_name.ilike.${term},bin_code.ilike.${term}`
         );
       }
 
@@ -120,9 +120,9 @@ export default function LiveBarcodes() {
         if (toDate) countQuery = countQuery.lte("produced_at", toDate);
 
         if (q.trim()) {
-          const term = `${q.trim()}%`;
+          const term = `%${q.trim()}%`;
           countQuery = countQuery.or(
-            `packet_code.ilike.${term},finished_good_name.ilike.${term}`
+            `packet_code.ilike.${term},finished_good_name.ilike.${term},bin_code.ilike.${term}`
           );
         }
 
