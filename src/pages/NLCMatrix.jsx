@@ -13,7 +13,8 @@ export default function NLCMatrix() {
     const [settings, setSettings] = useState({
         single_packet_cost: 15,
         extra_packet_cost: 10,
-        jar_cost: 20
+        jar_cost: 20,
+        katta_cost: 50
     })
     const [savingSettings, setSavingSettings] = useState(false)
 
@@ -41,7 +42,8 @@ export default function NLCMatrix() {
             if (data) setSettings({
                 single_packet_cost: data.single_packet_cost ?? 15,
                 extra_packet_cost: data.extra_packet_cost ?? 10,
-                jar_cost: data.jar_cost ?? 20
+                jar_cost: data.jar_cost ?? 20,
+                katta_cost: data.katta_cost ?? 50
             })
         }
         fetchSettings()
@@ -56,7 +58,7 @@ export default function NLCMatrix() {
 
             let query = supabase
                 .from('v_nlc_matrix_aggregated')
-                .select('*', { count: 'exact' })
+                .select('*', { count: 'estimated' })
                 .order('sku', { ascending: true })
                 .range(from, to)
 
@@ -110,7 +112,8 @@ export default function NLCMatrix() {
             const { error } = await supabase.rpc('update_nlc_settings', {
                 p_single: Number(settings.single_packet_cost) || 0,
                 p_extra: Number(settings.extra_packet_cost) || 0,
-                p_jar: Number(settings.jar_cost) || 0
+                p_jar: Number(settings.jar_cost) || 0,
+                p_katta: Number(settings.katta_cost) || 0
             })
             if (error) throw error
             push('Settings saved!', 'ok')
@@ -155,6 +158,12 @@ export default function NLCMatrix() {
                             <label>Jar</label>
                             <input type="number" value={settings.jar_cost}
                                 onChange={e => setSettings({ ...settings, jar_cost: e.target.value })}
+                                style={{ width: 90, marginLeft: 6 }} />
+                        </div>
+                        <div>
+                            <label>Katta</label>
+                            <input type="number" value={settings.katta_cost}
+                                onChange={e => setSettings({ ...settings, katta_cost: e.target.value })}
                                 style={{ width: 90, marginLeft: 6 }} />
                         </div>
                         <button className="btn small" onClick={saveSettings} disabled={savingSettings}>
@@ -212,10 +221,13 @@ export default function NLCMatrix() {
                                     const jarCost = Number(settings.jar_cost) || 0
                                     const singleCost = Number(settings.single_packet_cost) || 0
                                     const extraCost = Number(settings.extra_packet_cost) || 0
+                                    const kattaCost = Number(settings.katta_cost) || 0
+                                    const isKatta = /10kg|20kg/i.test(row.sku)
 
-                                    // Total Pkg = Jars + (Either Single or Extra depending on total normal qty)
+                                    // Total Pkg = Jars + (Either Katta, Single or Extra depending on total normal qty)
                                     let totalPkgCost = totalJarQty * jarCost
-                                    if (totalNormalQty === 1) totalPkgCost += singleCost
+                                    if (isKatta) totalPkgCost += kattaCost
+                                    else if (totalNormalQty === 1) totalPkgCost += singleCost
                                     else if (totalNormalQty > 1) totalPkgCost += totalNormalQty * extraCost
 
                                     let totalBomCost = 0
@@ -225,7 +237,11 @@ export default function NLCMatrix() {
                                             pkgCost = jarCost * it.qty_per_sku
                                         } else {
                                             // If total packets > 1, this item's share is qty * extraCost
-                                            if (totalNormalQty === 1) pkgCost = singleCost
+                                            if (isKatta) {
+                                                // Prorate the katta cost among the normal items
+                                                pkgCost = totalNormalQty > 0 ? (kattaCost / totalNormalQty) * it.qty_per_sku : 0
+                                            }
+                                            else if (totalNormalQty === 1) pkgCost = singleCost
                                             else pkgCost = it.qty_per_sku * extraCost
                                         }
                                         const bomLine = (Number(it.bom_cost) || 0) * it.qty_per_sku
@@ -294,7 +310,7 @@ export default function NLCMatrix() {
                                             <td>
                                                 {enrichedItems.map(it => (
                                                     <div key={it.finished_good_id} style={{ fontSize: '0.88em', padding: '1px 0' }}>
-                                                        <span className={`badge ${it.packaging_type === 'jar' ? 'orange' : 'blue'}`}>
+                                                        <span className={`badge ${it.packaging_type === 'jar' ? 'orange' : it.packaging_type === 'katta' ? 'green' : 'blue'}`}>
                                                             {it.packaging_type.toUpperCase()}
                                                         </span>
                                                     </div>
