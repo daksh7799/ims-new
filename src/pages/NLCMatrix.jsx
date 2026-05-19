@@ -1,6 +1,7 @@
 import { useEffect, useState, useCallback, useRef } from 'react'
 import { supabase } from '../supabaseClient'
 import { useToast } from '../ui/toast'
+import { downloadCSV } from '../utils/csv'
 
 const PAGE_SIZE_OPTIONS = [25, 50, 100]
 
@@ -17,6 +18,7 @@ export default function NLCMatrix() {
         katta_cost: 50
     })
     const [savingSettings, setSavingSettings] = useState(false)
+    const [exporting, setExporting] = useState(false)
 
     // Pagination state
     const [page, setPage] = useState(0)
@@ -124,6 +126,105 @@ export default function NLCMatrix() {
         }
     }
 
+    async function exportCSV() {
+        setExporting(true)
+        try {
+            let allData = []
+            let pageIndex = 0
+            const CHUNK_SIZE = 1000
+
+            while (true) {
+                const from = pageIndex * CHUNK_SIZE
+                const to = from + CHUNK_SIZE - 1
+
+                let query = supabase
+                    .from('v_nlc_matrix_aggregated')
+                    .select('*')
+                    .order('sku', { ascending: true })
+                    .range(from, to)
+
+                if (activeSearch) {
+                    query = query.or(`sku.ilike.%${activeSearch}%,sku_description.ilike.%${activeSearch}%`)
+                }
+
+                const { data, error } = await query
+                if (error) throw error
+
+                if (!data || data.length === 0) break
+                allData.push(...data)
+                if (data.length < CHUNK_SIZE) break
+                pageIndex++
+            }
+
+            if (allData.length === 0) {
+                push('No data to export', 'warn')
+                return
+            }
+
+            const jarCost = Number(settings.jar_cost) || 0
+            const singleCost = Number(settings.single_packet_cost) || 0
+            const extraCost = Number(settings.extra_packet_cost) || 0
+            const kattaCost = Number(settings.katta_cost) || 0
+
+            const csvRows = allData.map(row => {
+                const items = Array.isArray(row.items) ? row.items : []
+                const totalNormalQty = items.reduce((s, it) => s + (it.packaging_type !== 'jar' ? (Number(it.qty_per_sku) || 0) : 0), 0)
+                const totalJarQty = items.reduce((s, it) => s + (it.packaging_type === 'jar' ? (Number(it.qty_per_sku) || 0) : 0), 0)
+                const isKatta = /10kg|20kg/i.test(row.sku)
+
+                // Total Pkg = Jars + (Either Katta, Single or Extra depending on total normal qty)
+                let totalPkgCost = totalJarQty * jarCost
+                if (isKatta) totalPkgCost += kattaCost
+                else if (totalNormalQty === 1) totalPkgCost += singleCost
+                else if (totalNormalQty > 1) totalPkgCost += totalNormalQty * extraCost
+
+                let totalBomCost = 0
+                const enrichedItems = items.map(it => {
+                    let pkgCost = 0
+                    if (it.packaging_type === 'jar') {
+                        pkgCost = jarCost * it.qty_per_sku
+                    } else {
+                        if (isKatta) {
+                            pkgCost = totalNormalQty > 0 ? (kattaCost / totalNormalQty) * it.qty_per_sku : 0
+                        }
+                        else if (totalNormalQty === 1) pkgCost = singleCost
+                        else pkgCost = it.qty_per_sku * extraCost
+                    }
+                    const bomLine = (Number(it.bom_cost) || 0) * it.qty_per_sku
+                    totalBomCost += bomLine
+                    return { ...it, pkgCost, bomLine }
+                })
+
+                const totalWeight = enrichedItems.reduce((s, it) => s + (Number(it.total_weight) || 0) * it.qty_per_sku, 0)
+                const nlc = totalBomCost + totalPkgCost
+                const derivedFinalCostPerKg = totalWeight > 0 ? (totalBomCost / totalWeight) : 0
+
+                const fgsFormatted = enrichedItems.map(it => `${it.qty_per_sku}x ${it.finished_good_name}`).join('; ')
+                const pkgTypesFormatted = enrichedItems.map(it => it.packaging_type.toUpperCase()).join('; ')
+
+                return {
+                    'SKU': row.sku || '',
+                    'Description': row.sku_description || '',
+                    'Finished Goods': fgsFormatted,
+                    'Total Weight (kg)': totalWeight.toFixed(3),
+                    'Final Cost/kg (auto)': derivedFinalCostPerKg.toFixed(2),
+                    'BOM Cost (₹)': totalBomCost.toFixed(2),
+                    'Est. Total Cost (₹)': totalBomCost.toFixed(2),
+                    'Packaging Type': pkgTypesFormatted,
+                    'Packaging Cost (₹)': totalPkgCost.toFixed(2),
+                    'NLC (₹)': nlc.toFixed(2)
+                }
+            })
+
+            downloadCSV(`nlc_matrix_export.csv`, csvRows)
+            push('Export completed!', 'ok')
+        } catch (err) {
+            push(`Export error: ${err.message}`, 'err')
+        } finally {
+            setExporting(false)
+        }
+    }
+
 
     return (
         <div className="grid">
@@ -132,6 +233,9 @@ export default function NLCMatrix() {
                     <b>NLC Matrix</b>
                     <div className="row" style={{ gap: 8 }}>
                         <span className="badge">{total} SKUs</span>
+                        <button className="btn outline small" onClick={exportCSV} disabled={loading || exporting || !total}>
+                            {exporting ? 'Exporting...' : 'Export CSV'}
+                        </button>
                         <button className="btn ghost small" onClick={() => fetchData(page, pageSize, activeSearch)} disabled={loading}>
                             Refresh
                         </button>
