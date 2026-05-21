@@ -54,7 +54,7 @@ export default function BillCheck() {
         if (!dateStr) return "";
         const [year, month, day] = dateStr.split("-");
         const months = [
-            "Jan", "Feb", "Mar", "Apr", "Mar", "Jun",
+            "Jan", "Feb", "Mar", "Apr", "May", "Jun",
             "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"
         ];
         return `${day}-${months[parseInt(month) - 1]}-${year.slice(-2)}`;
