@@ -73,7 +73,7 @@ export default function SKUMappings() {
         if (!filtered.includes(bulkMeta.category)) {
             setBulkMeta(prev => ({ ...prev, category: 'Other' }))
         }
-    }, [bulkMeta.portal, dbCategories])
+    }, [bulkMeta.portal, dbCategories, bulkMeta.category])
 
     const load = useCallback(async () => {
         setLoading(true)
@@ -190,8 +190,6 @@ export default function SKUMappings() {
         try {
             let skuList = Array.from(selectedSkus)
 
-            // If "all matching" is selected but we only have page SKUs in the set,
-            // fetch ALL matching SKU codes from the database
             if (allMatchSelected && skuList.length < totalCount) {
                 setBulkProgress({ done: 0, total: totalCount, label: 'Fetching all matching SKUs...' })
                 skuList = []
@@ -205,7 +203,7 @@ export default function SKUMappings() {
                     if (!data || data.length === 0) break
                     skuList.push(...data.map(d => d.sku))
                     offset += FETCH_SIZE
-                    setBulkProgress({ done: 0, total: skuList.length, label: `Fetched ${skuList.length} SKUs...` })
+                    setBulkProgress({ done: 0, total: totalCount, label: `Fetched ${skuList.length} of ${totalCount} SKUs...` })
                     if (data.length < FETCH_SIZE) break
                 }
             }
@@ -215,6 +213,8 @@ export default function SKUMappings() {
 
             const CHUNK = 500
             let successCount = 0
+            const uploadChunks = []
+
             for (let i = 0; i < skuList.length; i += CHUNK) {
                 const chunk = skuList.slice(i, i + CHUNK)
                 const upserts = chunk.map(s => ({
@@ -226,11 +226,20 @@ export default function SKUMappings() {
                     is_amount_fee: bulkMeta.is_amount_fee,
                     updated_at: new Date().toISOString()
                 }))
-                const { error } = await supabase
-                    .from('sku_portal_metadata')
-                    .upsert(upserts, { onConflict: 'sku,portal' })
-                if (error) throw error
-                successCount += chunk.length
+                uploadChunks.push(upserts)
+            }
+
+            // Execute parallel assignments across throttled pools
+            const CONCURRENCY_LIMIT = 4
+            for (let i = 0; i < uploadChunks.length; i += CONCURRENCY_LIMIT) {
+                const slice = uploadChunks.slice(i, i + CONCURRENCY_LIMIT)
+                await Promise.all(slice.map(async (chunk) => {
+                    const { error } = await supabase
+                        .from('sku_portal_metadata')
+                        .upsert(chunk, { onConflict: 'sku,portal' })
+                    if (error) throw error
+                    successCount += chunk.length
+                }))
                 setBulkProgress({ done: successCount, total: totalSkus, label: `Assigned ${successCount}/${totalSkus} SKUs...` })
             }
 
@@ -238,7 +247,6 @@ export default function SKUMappings() {
             setSelectedSkus(new Set())
             setAllMatchSelected(false)
 
-            // Reload data first, then sync NLC in background
             load()
             setBulkProgress({ done: totalSkus, total: totalSkus, label: 'Syncing costs (background)...' })
             supabase.rpc('sync_all_nlc_costs').then(() => {
@@ -260,12 +268,10 @@ export default function SKUMappings() {
             setAllMatchSelected(false)
         } else {
             setSelectedSkus(new Set(mappings.map(m => m.sku)))
-            // Don't auto-set allMatchSelected, user can opt-in via the banner
         }
     }
 
     async function selectAllMatching() {
-        // Fetch ALL SKU codes matching the current filter across all pages
         push('Selecting all matching SKUs...', 'ok')
         try {
             let allSkuCodes = []
@@ -296,7 +302,7 @@ export default function SKUMappings() {
             else next.add(skuCode)
             return next
         })
-        setAllMatchSelected(false) // individual toggle breaks "all matching" mode
+        setAllMatchSelected(false)
     }
 
     useEffect(() => { load() }, [load])
@@ -328,7 +334,6 @@ export default function SKUMappings() {
         }
 
         try {
-            // Insert SKU mapping
             const { error: err1 } = await supabase
                 .from('sku_mappings')
                 .insert({
@@ -338,7 +343,6 @@ export default function SKUMappings() {
 
             if (err1) throw err1
 
-            // Insert SKU mapping items
             const { error: err2 } = await supabase
                 .from('sku_mapping_items')
                 .insert(
@@ -351,7 +355,6 @@ export default function SKUMappings() {
 
             if (err2) throw err2
 
-            // Auto sync NLC
             await supabase.rpc('sync_all_nlc_costs')
 
             push('SKU mapping created!', 'ok')
@@ -420,7 +423,6 @@ export default function SKUMappings() {
         }
 
         try {
-            // Update description
             const { error: err1 } = await supabase
                 .from('sku_mappings')
                 .update({ description: editDescription.trim() || null })
@@ -428,7 +430,6 @@ export default function SKUMappings() {
 
             if (err1) throw err1
 
-            // Delete all existing items
             const { error: err2 } = await supabase
                 .from('sku_mapping_items')
                 .delete()
@@ -436,7 +437,6 @@ export default function SKUMappings() {
 
             if (err2) throw err2
 
-            // Insert new items
             const { error: err3 } = await supabase
                 .from('sku_mapping_items')
                 .insert(
@@ -449,7 +449,6 @@ export default function SKUMappings() {
 
             if (err3) throw err3
 
-            // Auto sync NLC
             await supabase.rpc('sync_all_nlc_costs')
 
             push('SKU mapping updated!', 'ok')
@@ -519,7 +518,7 @@ export default function SKUMappings() {
 
             push(`Parsing ${rows.length} rows…`, 'ok')
 
-            const upserts = []
+            const rawUpserts = []
             const failedRows = []
 
             for (const r of rows) {
@@ -532,7 +531,7 @@ export default function SKUMappings() {
                     continue
                 }
 
-                upserts.push({
+                rawUpserts.push({
                     sku: skuCode,
                     portal,
                     category,
@@ -540,64 +539,76 @@ export default function SKUMappings() {
                 })
             }
 
-            if (upserts.length === 0) {
+            if (rawUpserts.length === 0) {
                 throw new Error('No valid rows found. Make sure columns are: SKU, Portal, Category')
             }
 
-            // Validate that all SKU codes exist in sku_mappings (FK constraint check)
-            push(`Validating ${upserts.length} SKU codes…`, 'ok')
-            const uniqueSkus = [...new Set(upserts.map(u => u.sku))]
+            // Deduplicate early in memory to prevent Postgres unique indexing lock delays
+            const deduplicatedMap = new Map()
+            for (const u of rawUpserts) {
+                deduplicatedMap.set(`${u.sku}_${u.portal}`, u)
+            }
+            const uniqueUpserts = Array.from(deduplicatedMap.values())
+
+            push(`Validating ${uniqueUpserts.length} unique assignments…`, 'ok')
+            const uniqueSkuCodes = [...new Set(uniqueUpserts.map(u => u.sku))]
             const existingSkuSet = new Set()
             const CHUNK = 500
-            for (let i = 0; i < uniqueSkus.length; i += CHUNK) {
+
+            for (let i = 0; i < uniqueSkuCodes.length; i += CHUNK) {
                 const { data: found, error: skuErr } = await supabase
                     .from('sku_mappings')
                     .select('sku')
-                    .in('sku', uniqueSkus.slice(i, i + CHUNK))
+                    .in('sku', uniqueSkuCodes.slice(i, i + CHUNK))
                 if (skuErr) throw skuErr
                 found?.forEach(r => existingSkuSet.add(r.sku))
             }
 
-            // Split upserts into valid (SKU exists) vs failed (SKU not in system)
-            const validUpserts = []
-            for (const u of upserts) {
+            const finalUpserts = []
+            for (const u of uniqueUpserts) {
                 if (existingSkuSet.has(u.sku)) {
-                    validUpserts.push(u)
+                    finalUpserts.push(u)
                 } else {
                     failedRows.push({ SKU: u.sku, Portal: u.portal, Category: u.category, Error: 'SKU not found in system — create the SKU mapping first' })
                 }
             }
 
-            if (validUpserts.length === 0) {
-                throw new Error(`All ${upserts.length} rows failed: none of the SKU codes exist in the system.`)
+            if (finalUpserts.length === 0) {
+                throw new Error(`All rows failed validation: none of the SKU codes exist in your database records.`)
             }
 
-            // Deduplicate by sku+portal to avoid Postgres "cannot affect row a second time" error
-            // (If the CSV has duplicates, the last one wins)
-            const deduplicatedMap = new Map()
-            for (const u of validUpserts) {
-                deduplicatedMap.set(`${u.sku}_${u.portal}`, u)
-            }
-            const finalUpserts = Array.from(deduplicatedMap.values())
-
-            setBulkProgress({ done: 0, total: finalUpserts.length, label: `Assigning ${finalUpserts.length} portal mappings…` })
+            setBulkProgress({ done: 0, total: finalUpserts.length, label: `Assigning ${finalUpserts.length} portal configurations…` })
 
             let successCount = 0
+            const uploadChunks = []
             for (let i = 0; i < finalUpserts.length; i += CHUNK) {
-                const { error } = await supabase
-                    .from('sku_portal_metadata')
-                    .upsert(finalUpserts.slice(i, i + CHUNK), { onConflict: 'sku,portal' })
-                if (error) {
-                    const chunk = finalUpserts.slice(i, i + CHUNK)
-                    chunk.forEach(u => failedRows.push({ SKU: u.sku, Portal: u.portal, Category: u.category, Error: error.message }))
-                } else {
-                    successCount += Math.min(CHUNK, finalUpserts.length - i)
-                }
-                setBulkProgress({ done: successCount + failedRows.length, total: finalUpserts.length, label: `Assigned ${successCount}/${finalUpserts.length} portal mappings…` })
+                uploadChunks.push(finalUpserts.slice(i, i + CHUNK))
+            }
+
+            const CONCURRENCY_LIMIT = 3
+            for (let i = 0; i < uploadChunks.length; i += CONCURRENCY_LIMIT) {
+                const currentSlice = uploadChunks.slice(i, i + CONCURRENCY_LIMIT)
+                await Promise.all(currentSlice.map(async (chunk) => {
+                    const { error } = await supabase
+                        .from('sku_portal_metadata')
+                        .upsert(chunk, { onConflict: 'sku,portal' })
+                    if (error) {
+                        chunk.forEach(u => failedRows.push({ SKU: u.sku, Portal: u.portal, Category: u.category, Error: error.message }))
+                    } else {
+                        successCount += chunk.length
+                    }
+                }))
+
+                const currentDone = successCount + failedRows.filter(r => r.Error !== 'SKU not found in system — create the SKU mapping first').length
+                setBulkProgress({ 
+                    done: Math.min(currentDone, finalUpserts.length), 
+                    total: finalUpserts.length, 
+                    label: `Assigned ${successCount}/${finalUpserts.length} portal configurations…` 
+                })
             }
 
             if (failedRows.length > 0) {
-                push(`Assigned ${successCount} portal mappings. ${failedRows.length} failed. Downloading error report…`, 'warn')
+                push(`Assigned ${successCount} portal configurations. ${failedRows.length} failed. Exporting trace log…`, 'warn')
                 const headers = ['SKU', 'Portal', 'Category', 'Error']
                 const csvContent = [
                     headers.join(','),
@@ -606,16 +617,16 @@ export default function SKUMappings() {
                 const blob = new Blob([csvContent], { type: 'text/csv;charset=utf-8;' })
                 saveAs(blob, 'portal_assign_errors.csv')
             } else {
-                push(`Successfully assigned ${successCount} portal mappings!`, 'ok')
+                push(`Successfully assigned all ${successCount} portal configurations!`, 'ok')
             }
 
-            // Reload data first, then sync NLC in background (non-blocking)
             load()
             setBulkProgress({ done: finalUpserts.length, total: finalUpserts.length, label: 'Syncing costs (background)...' })
             supabase.rpc('sync_all_nlc_costs').then(() => setBulkProgress(null)).catch(() => setBulkProgress(null))
         } catch (err) {
             console.error(err)
             push(err.message, 'err')
+            setBulkProgress(null)
         } finally {
             e.target.value = ''
         }
@@ -625,7 +636,6 @@ export default function SKUMappings() {
         try {
             push('Exporting SKU mappings...', 'ok')
 
-            // Fetch ALL SKUs using range-based pagination (not limited by page/pageSize)
             let allSkuData = []
             let skuOffset = 0
             const SKU_FETCH_SIZE = 1000
@@ -637,20 +647,14 @@ export default function SKUMappings() {
                 baseQuery = baseQuery.ilike('sku', searchTerm)
             }
 
-            // Fetch all SKUs in chunks
             while (hasMoreSKUs) {
                 const { data: skuChunk, error: skuErr } = await baseQuery
                     .range(skuOffset, skuOffset + SKU_FETCH_SIZE - 1)
-
                 if (skuErr) throw skuErr
-
                 if (skuChunk && skuChunk.length > 0) {
                     allSkuData = allSkuData.concat(skuChunk)
                     skuOffset += SKU_FETCH_SIZE
-
-                    if (skuChunk.length < SKU_FETCH_SIZE) {
-                        hasMoreSKUs = false
-                    }
+                    if (skuChunk.length < SKU_FETCH_SIZE) hasMoreSKUs = false
                 } else {
                     hasMoreSKUs = false
                 }
@@ -660,13 +664,10 @@ export default function SKUMappings() {
             if (!skuData || skuData.length === 0) return push('No SKU mappings to export', 'warn')
 
             const skuCodes = skuData.map(s => s.sku)
-            const skuSet = new Set(skuCodes) // For fast lookup
+            const skuSet = new Set(skuCodes)
 
-            // Fetch ALL items using range-based pagination (not filtered by SKU in query)
-            // This is more reliable than trying to use .in() with large arrays
             let allItemsData = []
             let err2 = null
-
             push(`Fetching all SKU mapping items...`, 'ok')
 
             const ROWS_PER_FETCH = 1000
@@ -687,35 +688,20 @@ export default function SKUMappings() {
                 }
 
                 if (chunkItems && chunkItems.length > 0) {
-                    // Filter to only include items for SKUs we're exporting
                     const filteredItems = chunkItems.filter(item => skuSet.has(item.sku))
                     allItemsData = allItemsData.concat(filteredItems)
-
                     currentOffset += ROWS_PER_FETCH
-
-                    // Show progress
-                    if (currentOffset % 5000 === 0 || chunkItems.length < ROWS_PER_FETCH) {
-                        push(`Fetched ${currentOffset} rows... (${allItemsData.length} matching items)`, 'ok')
-                    }
-
-                    // If we got less than ROWS_PER_FETCH, we've reached the end
-                    if (chunkItems.length < ROWS_PER_FETCH) {
-                        hasMore = false
-                    }
+                    if (chunkItems.length < ROWS_PER_FETCH) hasMore = false
                 } else {
                     hasMore = false
                 }
             }
 
             const itemsData = allItemsData
-
             if (err2) throw err2
 
-            // Build SKU map for O(1) lookup instead of O(n) find
             const skuMap = {}
-            skuData.forEach(s => {
-                skuMap[s.sku] = s
-            })
+            skuData.forEach(s => { skuMap[s.sku] = s })
 
             const exportRows = []
             itemsData?.forEach(item => {
@@ -728,7 +714,6 @@ export default function SKUMappings() {
                 })
             })
 
-            // Export as CSV (faster and smaller for large datasets)
             const headers = ['SKU', 'Finished Good', 'Qty per SKU', 'Description']
             const csvContent = [
                 headers.join(','),
@@ -742,7 +727,7 @@ export default function SKUMappings() {
 
             const blob = new Blob([csvContent], { type: 'text/csv;charset=utf-8;' })
             saveAs(blob, `sku_mappings_export_${new Date().toISOString().split('T')[0]}.csv`)
-            push(`Exported ${exportRows.length} SKU mapping items (${skuCodes.length} unique SKUs)`, 'ok')
+            push(`Exported ${exportRows.length} items successfully!`, 'ok')
         } catch (err) {
             console.error('Export error:', err)
             push(err.message, 'err')
@@ -753,7 +738,6 @@ export default function SKUMappings() {
         try {
             push('Generating detailed pivoted export...', 'ok')
 
-            // 1. Fetch SKUs (Chunked)
             let allSkuData = []
             let skuOffset = 0
             const SKU_FETCH_SIZE = 1000
@@ -779,7 +763,6 @@ export default function SKUMappings() {
 
             if (allSkuData.length === 0) return push('No SKU mappings to export', 'warn')
 
-            // 2. Fetch mapping items (Chunked)
             const skuSet = new Set(allSkuData.map(s => s.sku))
             let allItemsData = []
             let currentOffset = 0
@@ -806,7 +789,6 @@ export default function SKUMappings() {
                 }
             }
 
-            // 3. Group by SKU and determine max columns
             const itemsBySku = {}
             let maxItems = 0
             allItemsData.forEach(item => {
@@ -818,14 +800,12 @@ export default function SKUMappings() {
                 if (itemsBySku[item.sku].length > maxItems) maxItems = itemsBySku[item.sku].length
             })
 
-            // 4. Generate dynamic headers
             const headers = ['SKU', 'Description']
             for (let i = 1; i <= maxItems; i++) {
                 headers.push(`Finished Good ${i}`)
                 headers.push(`Qty per SKU ${i}`)
             }
 
-            // 5. Generate rows
             const rows = allSkuData.map(s => {
                 const row = [`"${s.sku}"`, `"${s.description || ''}"`]
                 const items = itemsBySku[s.sku] || []
@@ -846,7 +826,6 @@ export default function SKUMappings() {
             const blob = new Blob([csvContent], { type: 'text/csv;charset=utf-8;' })
             saveAs(blob, `sku_mappings_pivoted_${new Date().toISOString().split('T')[0]}.csv`)
             push(`Exported ${allSkuData.length} SKUs in pivoted format`, 'ok')
-
         } catch (err) {
             console.error('Pivoted export error:', err)
             push(err.message, 'err')
@@ -857,7 +836,6 @@ export default function SKUMappings() {
         try {
             push('Generating Master SKU-BOM export...', 'ok')
 
-            // 1. Fetch SKUs
             let allSkuData = []
             let skuOffset = 0
             while (true) {
@@ -869,7 +847,6 @@ export default function SKUMappings() {
                 skuOffset += 1000
             }
 
-            // 2. Fetch Mapping Items
             let allMappingItems = []
             let itemOffset = 0
             while (true) {
@@ -881,7 +858,6 @@ export default function SKUMappings() {
                 itemOffset += 1000
             }
 
-            // 2.5 Fetch all Raw Materials to avoid relationship issues
             let allRMs = []
             let rmOffset = 0
             while (true) {
@@ -893,18 +869,15 @@ export default function SKUMappings() {
                 rmOffset += 1000
             }
             const rmMap = {}
-            allRMs.forEach(r => rmMap[r.id] = r)
+            allRMs.forEach(r => { rmMap[r.id] = r })
 
-            // 3. Fetch BOMs
             let allBomData = []
             let bomOffset = 0
             while (true) {
-                // Fetch from bom table directly using raw_material_id to join in-memory
                 const { data, error } = await supabase
                     .from('bom')
                     .select('finished_good_id, raw_material_id, qty_per_unit')
                     .range(bomOffset, bomOffset + 999)
-                
                 if (error) throw error
                 if (!data || data.length === 0) break
                 allBomData = allBomData.concat(data)
@@ -912,7 +885,6 @@ export default function SKUMappings() {
                 bomOffset += 1000
             }
 
-            // 4. Organize Data
             const itemsBySku = {}
             allMappingItems.forEach(item => {
                 if (!itemsBySku[item.sku]) itemsBySku[item.sku] = []
@@ -925,7 +897,6 @@ export default function SKUMappings() {
                 bomByFg[b.finished_good_id].push(b)
             })
 
-            // 5. Calculate Maxes for Header
             let maxFGsPerSKU = 0
             let maxRMsPerFG = 0
             
@@ -938,7 +909,6 @@ export default function SKUMappings() {
                 })
             })
 
-            // 6. Headers
             const headers = ['SKU', 'Description']
             for (let i = 1; i <= maxFGsPerSKU; i++) {
                 headers.push(`Finished Good ${i}`, `Qty per SKU ${i}`)
@@ -947,7 +917,6 @@ export default function SKUMappings() {
                 }
             }
 
-            // 7. Rows
             const rows = allSkuData.map(s => {
                 const row = [`"${s.sku}"`, `"${s.description || ''}"`]
                 const items = itemsBySku[s.sku] || []
@@ -960,13 +929,9 @@ export default function SKUMappings() {
                         for (let j = 0; j < maxRMsPerFG; j++) {
                             const rm = rms[j]
                             if (rm) {
-                                // Get RM details from map
                                 const rawMat = rmMap[rm.raw_material_id]
-                                // Use accounting_name if available, else fallback to name
                                 const rmName = rawMat?.accounting_name || rawMat?.name || 'Unknown'
-                                // Calculate total quantity: Qty per SKU * Qty per unit of FG
                                 const totalQty = (Number(item.qty_per_sku) || 0) * (Number(rm.qty_per_unit) || 0)
-                                
                                 row.push(`"${rmName}"`)
                                 row.push(totalQty)
                             } else {
@@ -1007,7 +972,6 @@ export default function SKUMappings() {
 
             push(`Parsing ${rows.length} rows...`, 'ok')
 
-            // Group by SKU
             const skuGroups = {}
             for (const r of rows) {
                 const skuCode = String(r['SKU'] ?? r['sku'] ?? '').trim()
@@ -1026,7 +990,6 @@ export default function SKUMappings() {
             const skuCodes = Object.keys(skuGroups)
             if (skuCodes.length === 0) throw new Error('No valid SKU rows found')
 
-            // Fetch all unique FG names
             const allFgNames = [...new Set(
                 Object.values(skuGroups).flatMap(g => g.items.map(i => i.fgName))
             )]
@@ -1040,7 +1003,6 @@ export default function SKUMappings() {
                 fgChunks.push(allFgNames.slice(i, i + CHUNK_SIZE_FG))
             }
 
-            // Parallel fetch FGs with limited concurrency
             const CONCURRENCY = 5
             for (let i = 0; i < fgChunks.length; i += CONCURRENCY) {
                 const slice = fgChunks.slice(i, i + CONCURRENCY)
@@ -1058,7 +1020,6 @@ export default function SKUMappings() {
                 }))
             }
 
-            // Validate and separate
             const validSkuCodes = []
             const failedRows = []
 
@@ -1095,7 +1056,6 @@ export default function SKUMappings() {
                 throw new Error(`All ${skuCodes.length} SKUs failed validation. Sample errors: ${sample}`)
             }
 
-            // Handle Full Replace Mode
             if (importMode === 'replace') {
                 if (!confirm('WARNING: You are about to DELETE ALL existing SKU mappings and replace them with this file. This action cannot be undone. Are you sure?')) {
                     return
@@ -1103,23 +1063,21 @@ export default function SKUMappings() {
 
                 push('Clearing all existing mappings...', 'warn')
 
-                // Delete all items first (cascade should handle it but let's be safe)
                 const { error: clearItemsErr } = await supabase
                     .from('sku_mapping_items')
                     .delete()
-                    .neq('id', 0) // Delete all
+                    .neq('id', 0)
 
                 if (clearItemsErr) throw new Error(`Failed to clear items: ${clearItemsErr.message}`)
 
                 const { error: clearSkuErr } = await supabase
                     .from('sku_mappings')
                     .delete()
-                    .neq('sku', 'PLACEHOLDER') // Delete all
+                    .neq('sku', 'PLACEHOLDER')
 
                 if (clearSkuErr) throw new Error(`Failed to clear SKUs: ${clearSkuErr.message}`)
             }
 
-            // Insert VALID SKUs and items in chunks
             const modeLabel = importMode === 'update' ? 'Updating' : 'Importing'
             push(`${modeLabel} ${validSkuCodes.length} valid SKUs...`, 'ok')
 
@@ -1131,7 +1089,6 @@ export default function SKUMappings() {
                 const chunkCodes = validSkuCodes.slice(i, i + CHUNK_SIZE_SKU)
 
                 try {
-                    // 1. Upsert SKUs
                     const skuUpserts = chunkCodes.map(code => ({
                         sku: code,
                         description: skuGroups[code].description || null,
@@ -1144,7 +1101,6 @@ export default function SKUMappings() {
 
                     if (err1) throw new Error(`Upsert failed: ${err1.message}`)
 
-                    // 2. Delete existing items
                     const { error: err2 } = await supabase
                         .from('sku_mapping_items')
                         .delete()
@@ -1152,7 +1108,6 @@ export default function SKUMappings() {
 
                     if (err2) throw new Error(`Cleanup failed: ${err2.message}`)
 
-                    // 3. Insert new items
                     const itemInserts = []
                     for (const code of chunkCodes) {
                         for (const item of skuGroups[code].items) {
@@ -1178,7 +1133,6 @@ export default function SKUMappings() {
 
                 } catch (chunkErr) {
                     console.error('Chunk error:', chunkErr)
-                    // Add these SKUs to failedRows
                     for (const code of chunkCodes) {
                         const data = skuGroups[code]
                         for (const item of data.items) {
@@ -1195,7 +1149,6 @@ export default function SKUMappings() {
                 }
             }
 
-            // Handle failures
             const successMsg = importMode === 'update'
                 ? `Successfully updated ${successCount} SKUs!`
                 : `Successfully imported ${successCount} SKUs!`
@@ -1204,7 +1157,6 @@ export default function SKUMappings() {
                 const actionLabel = importMode === 'update' ? 'Updated' : 'Imported'
                 push(`${actionLabel} ${successCount} SKUs. ${skuCodes.length - successCount} SKUs failed. Downloading error report...`, 'warn')
 
-                // Generate error CSV
                 const headers = ['SKU', 'Finished Good', 'Qty per SKU', 'Description', 'Error']
                 const csvContent = [
                     headers.join(','),
@@ -1223,9 +1175,7 @@ export default function SKUMappings() {
                 push(successMsg, 'ok')
             }
 
-            // Auto sync NLC
             await supabase.rpc('sync_all_nlc_costs')
-
             load()
         } catch (err) {
             console.error(err)
@@ -1352,19 +1302,16 @@ export default function SKUMappings() {
 
                         {importMode === 'update' ? (
                             <div className="s" style={{ color: 'var(--muted)', marginTop: 8 }}>
-                                ✅ <b>Update Mode:</b> Only the SKUs in your file will be updated. All other SKUs remain unchanged.
-                                Safe for editing a subset of your 20k+ SKU mappings.
+                                ✅ <b>Update Mode:</b> Only the SKUs in your file will be updated. All other SKUs remain unchanged. Safe for editing a subset of your SKU mappings.
                             </div>
                         ) : (
                             <div className="s" style={{ color: 'var(--danger)', marginTop: 8, padding: 8, background: 'var(--bg-secondary)', borderRadius: 4 }}>
-                                ⚠️ <b>Full Replace Mode:</b> This mode is for initial bulk setup only.
-                                It will replace ALL existing SKU mappings with the uploaded data. Use with extreme caution!
+                                ⚠️ <b>Full Replace Mode:</b> This mode is for initial bulk setup only. It will replace ALL existing SKU mappings with the uploaded data. Use with extreme caution!
                             </div>
                         )}
 
                         <div className="s" style={{ color: 'var(--muted)', marginTop: 8 }}>
-                            Columns: <code>SKU</code>, <code>Finished Good</code>, <code>Qty per SKU</code>, <code>Description</code> (optional).
-                            For combo SKUs, use multiple rows with the same SKU code.
+                            Columns: <code>SKU</code>, <code>Finished Good</code>, <code>Qty per SKU</code>, <code>Description</code> (optional). For combo SKUs, use multiple rows with the same SKU code.
                         </div>
                     </div>
 
@@ -1374,8 +1321,7 @@ export default function SKUMappings() {
                             <div style={{ fontWeight: 600, marginBottom: 4 }}>🏪 Bulk Portal Assignment via CSV</div>
                             <div className="s" style={{ color: 'var(--muted)' }}>
                                 Assign portals to many SKUs at once by uploading a CSV with columns:
-                                {' '}<code>SKU</code>, <code>Portal</code>, <code>Category</code> (optional, defaults to &quot;Other&quot;).
-                                One row per SKU-portal pair. Existing assignments will be updated.
+                                {' '}<code>SKU</code>, <code>Portal</code>, <code>Category</code> (optional, defaults to &quot;Other&quot;). One row per SKU-portal pair. Existing assignments will be updated.
                             </div>
                         </div>
                         <div className="row" style={{ gap: 8 }}>
@@ -1527,15 +1473,6 @@ export default function SKUMappings() {
                                             </div>
                                         </td>
                                         <td>
-                                            <button
-                                                className="btn ghost"
-                                                onClick={() => toggleExpand(m.sku)}
-                                                style={{ fontSize: '0.85em' }}
-                                            >
-                                                {expandedRows.has(m.sku) ? '▼' : '▶'} {m.items.length} item{m.items.length !== 1 ? 's' : ''}
-                                            </button>
-                                        </td>
-                                        <td>
                                             <div className="row" style={{ gap: 4 }}>
                                                 {editingSku === m.sku ? (
                                                     <>
@@ -1553,7 +1490,7 @@ export default function SKUMappings() {
                                     </tr>
                                     {expandedRows.has(m.sku) && (
                                         <tr>
-                                            <td colSpan="6" style={{ background: 'var(--bg-secondary)', padding: 12 }}>
+                                            <td colSpan="5" style={{ background: 'var(--bg-secondary)', padding: 12 }}>
                                                 {editingSku === m.sku ? (
                                                     <div style={{ display: 'grid', gap: 10 }}>
                                                         <input
@@ -1627,7 +1564,7 @@ export default function SKUMappings() {
                             ))}
                             {mappings.length === 0 && (
                                 <tr>
-                                    <td colSpan="6" style={{ color: 'var(--muted)' }}>
+                                    <td colSpan="5" style={{ color: 'var(--muted)' }}>
                                         {loading ? 'Loading…' : q ? 'No SKUs found matching your search' : 'No SKU mappings found'}
                                     </td>
                                 </tr>
@@ -1672,7 +1609,6 @@ export default function SKUMappings() {
                     padding: '12px 24px', boxShadow: '0 8px 32px rgba(0,0,0,0.4)', zIndex: 1000,
                     display: 'flex', flexDirection: 'column', gap: 10, minWidth: 600, maxWidth: '90vw'
                 }}>
-                    {/* "Select All Matching" banner — appears when page selection is on but there are more across pages */}
                     {!allMatchSelected && selectedSkus.size >= mappings.length && totalCount > mappings.length && (
                         <div style={{
                             background: 'var(--primary-subtle, rgba(99,102,241,0.1))', borderRadius: 8,
