@@ -18,6 +18,7 @@ export default function SKUMappings() {
 
     // Bulk selection
     const [selectedSkus, setSelectedSkus] = useState(new Set())
+    const [allMatchSelected, setAllMatchSelected] = useState(false) // true when "select all across pages" is active
     const [bulkMeta, setBulkMeta] = useState({
         portal: '',
         category: 'Other',
@@ -26,6 +27,7 @@ export default function SKUMappings() {
         is_amount_fee: true
     })
     const [bulkSaving, setBulkSaving] = useState(false)
+    const [bulkProgress, setBulkProgress] = useState(null) // { done, total, label }
 
     // Pagination state
     const [page, setPage] = useState(0)
@@ -78,7 +80,7 @@ export default function SKUMappings() {
         try {
             let countQuery = supabase
                 .from('sku_mappings')
-                .select('sku', { count: 'exact', head: true })
+                .select('sku', { count: 'estimated', head: true })
 
             let dataQuery = supabase
                 .from('sku_mappings')
@@ -184,34 +186,69 @@ export default function SKUMappings() {
     async function bulkSaveMeta() {
         if (selectedSkus.size === 0 || !bulkMeta.portal) return
         setBulkSaving(true)
+        setBulkProgress({ done: 0, total: selectedSkus.size, label: 'Preparing...' })
         try {
-            const skuList = Array.from(selectedSkus)
-            const upserts = skuList.map(s => ({
-                sku: s,
-                portal: bulkMeta.portal,
-                category: bulkMeta.category,
-                is_category_fee: bulkMeta.is_category_fee,
-                is_weight_fee: bulkMeta.is_weight_fee,
-                is_amount_fee: bulkMeta.is_amount_fee,
-                updated_at: new Date().toISOString()
-            }))
+            let skuList = Array.from(selectedSkus)
 
-            const CHUNK = 500
-            for (let i = 0; i < upserts.length; i += CHUNK) {
-                const { error } = await supabase
-                    .from('sku_portal_metadata')
-                    .upsert(upserts.slice(i, i + CHUNK), { onConflict: 'sku,portal' })
-                if (error) throw error
+            // If "all matching" is selected but we only have page SKUs in the set,
+            // fetch ALL matching SKU codes from the database
+            if (allMatchSelected && skuList.length < totalCount) {
+                setBulkProgress({ done: 0, total: totalCount, label: 'Fetching all matching SKUs...' })
+                skuList = []
+                let offset = 0
+                const FETCH_SIZE = 1000
+                while (true) {
+                    let fetchQuery = supabase.from('sku_mappings').select('sku').order('sku')
+                    if (q.trim()) fetchQuery = fetchQuery.ilike('sku', `%${q.trim()}%`)
+                    const { data, error } = await fetchQuery.range(offset, offset + FETCH_SIZE - 1)
+                    if (error) throw error
+                    if (!data || data.length === 0) break
+                    skuList.push(...data.map(d => d.sku))
+                    offset += FETCH_SIZE
+                    setBulkProgress({ done: 0, total: skuList.length, label: `Fetched ${skuList.length} SKUs...` })
+                    if (data.length < FETCH_SIZE) break
+                }
             }
 
-            // Auto sync NLC
-            await supabase.rpc('sync_all_nlc_costs')
+            const totalSkus = skuList.length
+            setBulkProgress({ done: 0, total: totalSkus, label: `Assigning portal to ${totalSkus} SKUs...` })
 
-            push(`Configured ${skuList.length} SKUs for ${bulkMeta.portal} successfully!`, 'ok')
+            const CHUNK = 500
+            let successCount = 0
+            for (let i = 0; i < skuList.length; i += CHUNK) {
+                const chunk = skuList.slice(i, i + CHUNK)
+                const upserts = chunk.map(s => ({
+                    sku: s,
+                    portal: bulkMeta.portal,
+                    category: bulkMeta.category,
+                    is_category_fee: bulkMeta.is_category_fee,
+                    is_weight_fee: bulkMeta.is_weight_fee,
+                    is_amount_fee: bulkMeta.is_amount_fee,
+                    updated_at: new Date().toISOString()
+                }))
+                const { error } = await supabase
+                    .from('sku_portal_metadata')
+                    .upsert(upserts, { onConflict: 'sku,portal' })
+                if (error) throw error
+                successCount += chunk.length
+                setBulkProgress({ done: successCount, total: totalSkus, label: `Assigned ${successCount}/${totalSkus} SKUs...` })
+            }
+
+            push(`Configured ${successCount} SKUs for ${bulkMeta.portal} successfully!`, 'ok')
             setSelectedSkus(new Set())
+            setAllMatchSelected(false)
+
+            // Reload data first, then sync NLC in background
             load()
+            setBulkProgress({ done: totalSkus, total: totalSkus, label: 'Syncing costs (background)...' })
+            supabase.rpc('sync_all_nlc_costs').then(() => {
+                setBulkProgress(null)
+            }).catch(() => {
+                setBulkProgress(null)
+            })
         } catch (err) {
             push(err.message, 'err')
+            setBulkProgress(null)
         } finally {
             setBulkSaving(false)
         }
@@ -220,8 +257,35 @@ export default function SKUMappings() {
     function toggleSelectAll() {
         if (selectedSkus.size >= mappings.length) {
             setSelectedSkus(new Set())
+            setAllMatchSelected(false)
         } else {
             setSelectedSkus(new Set(mappings.map(m => m.sku)))
+            // Don't auto-set allMatchSelected, user can opt-in via the banner
+        }
+    }
+
+    async function selectAllMatching() {
+        // Fetch ALL SKU codes matching the current filter across all pages
+        push('Selecting all matching SKUs...', 'ok')
+        try {
+            let allSkuCodes = []
+            let offset = 0
+            const FETCH_SIZE = 1000
+            while (true) {
+                let fetchQuery = supabase.from('sku_mappings').select('sku').order('sku')
+                if (q.trim()) fetchQuery = fetchQuery.ilike('sku', `%${q.trim()}%`)
+                const { data, error } = await fetchQuery.range(offset, offset + FETCH_SIZE - 1)
+                if (error) throw error
+                if (!data || data.length === 0) break
+                allSkuCodes.push(...data.map(d => d.sku))
+                offset += FETCH_SIZE
+                if (data.length < FETCH_SIZE) break
+            }
+            setSelectedSkus(new Set(allSkuCodes))
+            setAllMatchSelected(true)
+            push(`Selected all ${allSkuCodes.length} matching SKUs across all pages`, 'ok')
+        } catch (err) {
+            push(`Error selecting all: ${err.message}`, 'err')
         }
     }
 
@@ -232,6 +296,7 @@ export default function SKUMappings() {
             else next.add(skuCode)
             return next
         })
+        setAllMatchSelected(false) // individual toggle breaks "all matching" mode
     }
 
     useEffect(() => { load() }, [load])
@@ -515,7 +580,7 @@ export default function SKUMappings() {
             }
             const finalUpserts = Array.from(deduplicatedMap.values())
 
-            push(`Assigning ${finalUpserts.length} portal mappings…`, 'ok')
+            setBulkProgress({ done: 0, total: finalUpserts.length, label: `Assigning ${finalUpserts.length} portal mappings…` })
 
             let successCount = 0
             for (let i = 0; i < finalUpserts.length; i += CHUNK) {
@@ -528,6 +593,7 @@ export default function SKUMappings() {
                 } else {
                     successCount += Math.min(CHUNK, finalUpserts.length - i)
                 }
+                setBulkProgress({ done: successCount + failedRows.length, total: finalUpserts.length, label: `Assigned ${successCount}/${finalUpserts.length} portal mappings…` })
             }
 
             if (failedRows.length > 0) {
@@ -543,10 +609,10 @@ export default function SKUMappings() {
                 push(`Successfully assigned ${successCount} portal mappings!`, 'ok')
             }
 
-            // Auto sync NLC
-            await supabase.rpc('sync_all_nlc_costs')
-
+            // Reload data first, then sync NLC in background (non-blocking)
             load()
+            setBulkProgress({ done: finalUpserts.length, total: finalUpserts.length, label: 'Syncing costs (background)...' })
+            supabase.rpc('sync_all_nlc_costs').then(() => setBulkProgress(null)).catch(() => setBulkProgress(null))
         } catch (err) {
             console.error(err)
             push(err.message, 'err')
@@ -1367,7 +1433,7 @@ export default function SKUMappings() {
                         <thead>
                             <tr>
                                 <th style={{ width: 40 }}>
-                                    <input type="checkbox" checked={mappings.length > 0 && selectedSkus.size >= mappings.length} onChange={toggleSelectAll} />
+                                    <input type="checkbox" checked={mappings.length > 0 && (allMatchSelected || selectedSkus.size >= mappings.length)} onChange={toggleSelectAll} />
                                 </th>
                                 <th style={{ width: '25%' }}>SKU & Description</th>
                                 <th style={{ width: '45%' }}>Marketplace Configurations</th>
@@ -1571,54 +1637,119 @@ export default function SKUMappings() {
                 </div>
             </div>
 
+            {/* Bulk Progress Bar */}
+            {bulkProgress && (
+                <div style={{
+                    position: 'fixed', top: 0, left: 0, right: 0, zIndex: 1100,
+                    background: 'var(--bg-card)', borderBottom: '1px solid var(--border)',
+                    padding: '8px 24px', display: 'flex', alignItems: 'center', gap: 16,
+                    boxShadow: '0 2px 12px rgba(0,0,0,0.2)'
+                }}>
+                    <div style={{ flex: 1 }}>
+                        <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: 4 }}>
+                            <span style={{ fontSize: '0.85em', fontWeight: 600 }}>{bulkProgress.label}</span>
+                            <span style={{ fontSize: '0.85em', color: 'var(--muted)' }}>
+                                {bulkProgress.total > 0 ? Math.round((bulkProgress.done / bulkProgress.total) * 100) : 0}%
+                            </span>
+                        </div>
+                        <div style={{ height: 6, background: 'var(--bg-alt)', borderRadius: 3, overflow: 'hidden' }}>
+                            <div style={{
+                                height: '100%', borderRadius: 3,
+                                background: 'linear-gradient(90deg, var(--primary), var(--success))',
+                                width: bulkProgress.total > 0 ? `${(bulkProgress.done / bulkProgress.total) * 100}%` : '0%',
+                                transition: 'width 0.3s ease'
+                            }} />
+                        </div>
+                    </div>
+                </div>
+            )}
+
             {/* Bulk Action Bar */}
             {selectedSkus.size > 0 && (
                 <div style={{
                     position: 'fixed', bottom: 20, left: '50%', transform: 'translateX(-50%)',
                     background: 'var(--bg-card)', border: '2px solid var(--primary)', borderRadius: 12,
                     padding: '12px 24px', boxShadow: '0 8px 32px rgba(0,0,0,0.4)', zIndex: 1000,
-                    display: 'flex', alignItems: 'center', gap: 20, minWidth: 600
+                    display: 'flex', flexDirection: 'column', gap: 10, minWidth: 600, maxWidth: '90vw'
                 }}>
-                    <div style={{ fontWeight: 700, color: 'var(--primary)' }}>{selectedSkus.size} SKUs Selected</div>
-
-                    <div className="row" style={{ gap: 10, flex: 1, flexWrap: 'nowrap', overflowX: 'auto' }}>
-                        <select
-                            value={bulkMeta.portal}
-                            onChange={e => setBulkMeta(prev => ({ ...prev, portal: e.target.value }))}
-                            style={{ padding: '6px 12px', borderColor: 'var(--primary)', fontWeight: 600 }}
-                        >
-                            {dbPortals.map(p => <option key={p.code} value={p.code}>Target: {p.name}</option>)}
-                        </select>
-
-                        <select
-                            value={bulkMeta.category}
-                            onChange={e => setBulkMeta(prev => ({ ...prev, category: e.target.value }))}
-                            style={{ padding: '6px 12px' }}
-                        >
-                            {portalCategories.map(c => <option key={c} value={c}>{c}</option>)}
-                        </select>
-
-                        <div className="row" style={{ gap: 6 }}>
-                            <label className="badge xsmall outline" style={{ cursor: 'pointer', borderColor: bulkMeta.is_category_fee ? 'var(--primary)' : 'var(--border)', opacity: bulkMeta.is_category_fee ? 1 : 0.5 }}>
-                                <input type="checkbox" checked={bulkMeta.is_category_fee} onChange={e => setBulkMeta(p => ({ ...p, is_category_fee: e.target.checked }))} style={{ display: 'none' }} />
-                                Cat Fee
-                            </label>
-                            <label className="badge xsmall outline" style={{ cursor: 'pointer', borderColor: bulkMeta.is_weight_fee ? 'var(--primary)' : 'var(--border)', opacity: bulkMeta.is_weight_fee ? 1 : 0.5 }}>
-                                <input type="checkbox" checked={bulkMeta.is_weight_fee} onChange={e => setBulkMeta(p => ({ ...p, is_weight_fee: e.target.checked }))} style={{ display: 'none' }} />
-                                Wgt Fee
-                            </label>
-                            <label className="badge xsmall outline" style={{ cursor: 'pointer', borderColor: bulkMeta.is_amount_fee ? 'var(--primary)' : 'var(--border)', opacity: bulkMeta.is_amount_fee ? 1 : 0.5 }}>
-                                <input type="checkbox" checked={bulkMeta.is_amount_fee} onChange={e => setBulkMeta(p => ({ ...p, is_amount_fee: e.target.checked }))} style={{ display: 'none' }} />
-                                Amt Fee
-                            </label>
+                    {/* "Select All Matching" banner — appears when page selection is on but there are more across pages */}
+                    {!allMatchSelected && selectedSkus.size >= mappings.length && totalCount > mappings.length && (
+                        <div style={{
+                            background: 'var(--primary-subtle, rgba(99,102,241,0.1))', borderRadius: 8,
+                            padding: '8px 14px', display: 'flex', alignItems: 'center', justifyContent: 'space-between',
+                            border: '1px solid var(--primary)', fontSize: '0.85em'
+                        }}>
+                            <span>All <b>{mappings.length}</b> SKUs on this page are selected.</span>
+                            <button
+                                className="btn small"
+                                onClick={selectAllMatching}
+                                style={{ padding: '4px 14px', fontSize: '0.85em' }}
+                            >
+                                Select all {totalCount} matching SKUs
+                            </button>
                         </div>
-                    </div>
+                    )}
+                    {allMatchSelected && (
+                        <div style={{
+                            background: 'var(--success-subtle, rgba(16,185,129,0.1))', borderRadius: 8,
+                            padding: '8px 14px', display: 'flex', alignItems: 'center', justifyContent: 'space-between',
+                            border: '1px solid var(--success)', fontSize: '0.85em'
+                        }}>
+                            <span>✅ All <b>{selectedSkus.size}</b> matching SKUs selected across all pages.</span>
+                            <button
+                                className="btn ghost small"
+                                onClick={() => { setAllMatchSelected(false); setSelectedSkus(new Set()) }}
+                                style={{ padding: '4px 14px', fontSize: '0.85em' }}
+                            >
+                                Clear selection
+                            </button>
+                        </div>
+                    )}
 
-                    <div className="row" style={{ gap: 10 }}>
-                        <button className="btn ghost small" onClick={() => setSelectedSkus(new Set())}>Cancel</button>
-                        <button className="btn" onClick={bulkSaveMeta} disabled={bulkSaving}>
-                            {bulkSaving ? 'Saving…' : 'Apply Bulk Update'}
-                        </button>
+                    <div style={{ display: 'flex', alignItems: 'center', gap: 20 }}>
+                        <div style={{ fontWeight: 700, color: 'var(--primary)', whiteSpace: 'nowrap' }}>
+                            {selectedSkus.size} SKU{selectedSkus.size !== 1 ? 's' : ''} Selected
+                        </div>
+
+                        <div className="row" style={{ gap: 10, flex: 1, flexWrap: 'nowrap', overflowX: 'auto' }}>
+                            <select
+                                value={bulkMeta.portal}
+                                onChange={e => setBulkMeta(prev => ({ ...prev, portal: e.target.value }))}
+                                style={{ padding: '6px 12px', borderColor: 'var(--primary)', fontWeight: 600 }}
+                            >
+                                {dbPortals.map(p => <option key={p.code} value={p.code}>Target: {p.name}</option>)}
+                            </select>
+
+                            <select
+                                value={bulkMeta.category}
+                                onChange={e => setBulkMeta(prev => ({ ...prev, category: e.target.value }))}
+                                style={{ padding: '6px 12px' }}
+                            >
+                                {portalCategories.map(c => <option key={c} value={c}>{c}</option>)}
+                            </select>
+
+                            <div className="row" style={{ gap: 6 }}>
+                                <label className="badge xsmall outline" style={{ cursor: 'pointer', borderColor: bulkMeta.is_category_fee ? 'var(--primary)' : 'var(--border)', opacity: bulkMeta.is_category_fee ? 1 : 0.5 }}>
+                                    <input type="checkbox" checked={bulkMeta.is_category_fee} onChange={e => setBulkMeta(p => ({ ...p, is_category_fee: e.target.checked }))} style={{ display: 'none' }} />
+                                    Cat Fee
+                                </label>
+                                <label className="badge xsmall outline" style={{ cursor: 'pointer', borderColor: bulkMeta.is_weight_fee ? 'var(--primary)' : 'var(--border)', opacity: bulkMeta.is_weight_fee ? 1 : 0.5 }}>
+                                    <input type="checkbox" checked={bulkMeta.is_weight_fee} onChange={e => setBulkMeta(p => ({ ...p, is_weight_fee: e.target.checked }))} style={{ display: 'none' }} />
+                                    Wgt Fee
+                                </label>
+                                <label className="badge xsmall outline" style={{ cursor: 'pointer', borderColor: bulkMeta.is_amount_fee ? 'var(--primary)' : 'var(--border)', opacity: bulkMeta.is_amount_fee ? 1 : 0.5 }}>
+                                    <input type="checkbox" checked={bulkMeta.is_amount_fee} onChange={e => setBulkMeta(p => ({ ...p, is_amount_fee: e.target.checked }))} style={{ display: 'none' }} />
+                                    Amt Fee
+                                </label>
+                            </div>
+                        </div>
+
+                        <div className="row" style={{ gap: 10 }}>
+                            <button className="btn ghost small" onClick={() => { setSelectedSkus(new Set()); setAllMatchSelected(false) }}>Cancel</button>
+                            <button className="btn" onClick={bulkSaveMeta} disabled={bulkSaving}>
+                                {bulkSaving ? 'Saving…' : `Apply to ${selectedSkus.size} SKUs`}
+                            </button>
+                        </div>
                     </div>
                 </div>
             )}
