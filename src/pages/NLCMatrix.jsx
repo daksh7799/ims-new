@@ -15,7 +15,8 @@ export default function NLCMatrix() {
         single_packet_cost: 15,
         extra_packet_cost: 10,
         jar_cost: 20,
-        katta_cost: 50
+        katta_cost: 50,
+        slayzo_jar_cost: 25
     })
     const [savingSettings, setSavingSettings] = useState(false)
     const [exporting, setExporting] = useState(false)
@@ -45,7 +46,8 @@ export default function NLCMatrix() {
                 single_packet_cost: data.single_packet_cost ?? 15,
                 extra_packet_cost: data.extra_packet_cost ?? 10,
                 jar_cost: data.jar_cost ?? 20,
-                katta_cost: data.katta_cost ?? 50
+                katta_cost: data.katta_cost ?? 50,
+                slayzo_jar_cost: data.slayzo_jar_cost ?? 25
             })
         }
         fetchSettings()
@@ -98,8 +100,12 @@ export default function NLCMatrix() {
     // Packaging cost calc (runs client-side on fetched page only)
     function calcPkgCost(packagingType, qty) {
         const jarCost = Number(settings.jar_cost) || 0
+        const slayzoJarCost = Number(settings.slayzo_jar_cost) || 0
         const singleCost = Number(settings.single_packet_cost) || 0
         const extraCost = Number(settings.extra_packet_cost) || 0
+        if (packagingType === 'slayzo_jar') {
+            return slayzoJarCost * qty
+        }
         if (packagingType === 'jar') {
             return jarCost * qty
         }
@@ -115,7 +121,8 @@ export default function NLCMatrix() {
                 p_single: Number(settings.single_packet_cost) || 0,
                 p_extra: Number(settings.extra_packet_cost) || 0,
                 p_jar: Number(settings.jar_cost) || 0,
-                p_katta: Number(settings.katta_cost) || 0
+                p_katta: Number(settings.katta_cost) || 0,
+                p_slayzo_jar: Number(settings.slayzo_jar_cost) || 0
             })
             if (error) throw error
             push('Settings saved!', 'ok')
@@ -162,18 +169,20 @@ export default function NLCMatrix() {
             }
 
             const jarCost = Number(settings.jar_cost) || 0
+            const slayzoJarCost = Number(settings.slayzo_jar_cost) || 0
             const singleCost = Number(settings.single_packet_cost) || 0
             const extraCost = Number(settings.extra_packet_cost) || 0
             const kattaCost = Number(settings.katta_cost) || 0
 
             const csvRows = allData.map(row => {
                 const items = Array.isArray(row.items) ? row.items : []
-                const totalNormalQty = items.reduce((s, it) => s + (it.packaging_type !== 'jar' ? (Number(it.qty_per_sku) || 0) : 0), 0)
+                const totalNormalQty = items.reduce((s, it) => s + (it.packaging_type !== 'jar' && it.packaging_type !== 'slayzo_jar' ? (Number(it.qty_per_sku) || 0) : 0), 0)
                 const totalJarQty = items.reduce((s, it) => s + (it.packaging_type === 'jar' ? (Number(it.qty_per_sku) || 0) : 0), 0)
+                const totalSlayzoQty = items.reduce((s, it) => s + (it.packaging_type === 'slayzo_jar' ? (Number(it.qty_per_sku) || 0) : 0), 0)
                 const isKatta = /10kg|20kg/i.test(row.sku)
 
-                // Total Pkg = Jars + (Either Katta, Single or Extra depending on total normal qty)
-                let totalPkgCost = totalJarQty * jarCost
+                // Total Pkg = Jars + Slayzo Jars + (Either Katta, Single or Extra depending on total normal qty)
+                let totalPkgCost = totalJarQty * jarCost + totalSlayzoQty * slayzoJarCost
                 if (isKatta) totalPkgCost += kattaCost
                 else if (totalNormalQty === 1) totalPkgCost += singleCost
                 else if (totalNormalQty > 1) totalPkgCost += totalNormalQty * extraCost
@@ -181,7 +190,9 @@ export default function NLCMatrix() {
                 let totalBomCost = 0
                 const enrichedItems = items.map(it => {
                     let pkgCost = 0
-                    if (it.packaging_type === 'jar') {
+                    if (it.packaging_type === 'slayzo_jar') {
+                        pkgCost = slayzoJarCost * it.qty_per_sku
+                    } else if (it.packaging_type === 'jar') {
                         pkgCost = jarCost * it.qty_per_sku
                     } else {
                         if (isKatta) {
@@ -265,6 +276,12 @@ export default function NLCMatrix() {
                                 style={{ width: 90, marginLeft: 6 }} />
                         </div>
                         <div>
+                            <label>Slayzo Jar</label>
+                            <input type="number" value={settings.slayzo_jar_cost}
+                                onChange={e => setSettings({ ...settings, slayzo_jar_cost: e.target.value })}
+                                style={{ width: 90, marginLeft: 6 }} />
+                        </div>
+                        <div>
                             <label>Katta</label>
                             <input type="number" value={settings.katta_cost}
                                 onChange={e => setSettings({ ...settings, katta_cost: e.target.value })}
@@ -319,17 +336,19 @@ export default function NLCMatrix() {
                                 {!loading && matrixData.map(row => {
                                     const items = Array.isArray(row.items) ? row.items : []
                                     const isCombo = items.length > 1
-                                    const totalNormalQty = items.reduce((s, it) => s + (it.packaging_type !== 'jar' ? (Number(it.qty_per_sku) || 0) : 0), 0)
+                                    const totalNormalQty = items.reduce((s, it) => s + (it.packaging_type !== 'jar' && it.packaging_type !== 'slayzo_jar' ? (Number(it.qty_per_sku) || 0) : 0), 0)
                                     const totalJarQty = items.reduce((s, it) => s + (it.packaging_type === 'jar' ? (Number(it.qty_per_sku) || 0) : 0), 0)
+                                    const totalSlayzoQty = items.reduce((s, it) => s + (it.packaging_type === 'slayzo_jar' ? (Number(it.qty_per_sku) || 0) : 0), 0)
 
                                     const jarCost = Number(settings.jar_cost) || 0
+                                    const slayzoJarCost = Number(settings.slayzo_jar_cost) || 0
                                     const singleCost = Number(settings.single_packet_cost) || 0
                                     const extraCost = Number(settings.extra_packet_cost) || 0
                                     const kattaCost = Number(settings.katta_cost) || 0
                                     const isKatta = /10kg|20kg/i.test(row.sku)
 
-                                    // Total Pkg = Jars + (Either Katta, Single or Extra depending on total normal qty)
-                                    let totalPkgCost = totalJarQty * jarCost
+                                    // Total Pkg = Jars + Slayzo Jars + (Either Katta, Single or Extra depending on total normal qty)
+                                    let totalPkgCost = totalJarQty * jarCost + totalSlayzoQty * slayzoJarCost
                                     if (isKatta) totalPkgCost += kattaCost
                                     else if (totalNormalQty === 1) totalPkgCost += singleCost
                                     else if (totalNormalQty > 1) totalPkgCost += totalNormalQty * extraCost
@@ -337,7 +356,9 @@ export default function NLCMatrix() {
                                     let totalBomCost = 0
                                     const enrichedItems = items.map(it => {
                                         let pkgCost = 0
-                                        if (it.packaging_type === 'jar') {
+                                        if (it.packaging_type === 'slayzo_jar') {
+                                            pkgCost = slayzoJarCost * it.qty_per_sku
+                                        } else if (it.packaging_type === 'jar') {
                                             pkgCost = jarCost * it.qty_per_sku
                                         } else {
                                             // If total packets > 1, this item's share is qty * extraCost
@@ -414,7 +435,7 @@ export default function NLCMatrix() {
                                             <td>
                                                 {enrichedItems.map(it => (
                                                     <div key={it.finished_good_id} style={{ fontSize: '0.88em', padding: '1px 0' }}>
-                                                        <span className={`badge ${it.packaging_type === 'jar' ? 'orange' : it.packaging_type === 'katta' ? 'green' : 'blue'}`}>
+                                                        <span className={`badge ${it.packaging_type === 'slayzo_jar' ? 'purple' : it.packaging_type === 'jar' ? 'orange' : it.packaging_type === 'katta' ? 'green' : 'blue'}`}>
                                                             {it.packaging_type.toUpperCase()}
                                                         </span>
                                                     </div>
