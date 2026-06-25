@@ -44,7 +44,7 @@ export default function CostingMatrix() {
     const [categories, setCategories] = useState([])
 
     // NLC packaging settings (from nlc_settings table)
-    const [nlcPkg, setNlcPkg] = useState({ single_packet_cost: 15, extra_packet_cost: 10, jar_cost: 20 })
+    const [nlcPkg, setNlcPkg] = useState({ single_packet_cost: 15, extra_packet_cost: 10, jar_cost: 20, slayzo_jar_cost: 25 })
 
     // Settings panel toggle
     const [showSettings, setShowSettings] = useState(false)
@@ -66,6 +66,86 @@ export default function CostingMatrix() {
     const [matrixData, setMatrixData] = useState([])
     const [exporting, setExporting] = useState(false)
 
+    // Wix Variant Pricing State
+    const [allPortalSkus, setAllPortalSkus] = useState([])
+    const [baseSkusData, setBaseSkusData] = useState({})
+
+    const isWebsitePortal = selectedPortal?.toLowerCase() === 'website' || selectedPortal?.toLowerCase() === 'wix'
+
+    // Reset base SKUs cache when selected portal changes
+    useEffect(() => {
+        if (selectedPortal) {
+            setBaseSkusData({})
+        }
+    }, [selectedPortal])
+
+    // Fetch all portal SKUs when selectedPortal changes and isWebsitePortal is true
+    useEffect(() => {
+        if (!selectedPortal || !isWebsitePortal) {
+            setAllPortalSkus([])
+            return
+        }
+        async function fetchAllSkus() {
+            try {
+                const { data, error } = await supabase
+                    .from('sku_portal_metadata')
+                    .select('sku')
+                    .eq('portal', selectedPortal)
+                    .order('sku')
+                if (error) throw error
+                setAllPortalSkus((data || []).map(d => d.sku))
+            } catch (err) {
+                console.error('Error fetching portal SKUs:', err)
+            }
+        }
+        fetchAllSkus()
+    }, [selectedPortal, isWebsitePortal])
+
+    // Batch fetch missing Base SKU rows when matrixData contains new wix_base_sku values
+    useEffect(() => {
+        if (!isWebsitePortal || !matrixData.length || !selectedPortal) return
+
+        const missingSkus = [];
+        matrixData.forEach(row => {
+            const baseSku = row.extra_meta?.wix_base_sku;
+            if (baseSku && baseSku !== row.sku) {
+                const inCurrentPage = matrixData.some(r => r.sku === baseSku);
+                const inCache = baseSkusData[baseSku];
+                if (!inCurrentPage && !inCache && !missingSkus.includes(baseSku)) {
+                    missingSkus.push(baseSku);
+                }
+            }
+        });
+
+        if (missingSkus.length === 0) return;
+
+        async function fetchBaseSkus() {
+            try {
+                const { data, error } = await supabase
+                    .from('v_costing_matrix')
+                    .select('*')
+                    .eq('portal', selectedPortal)
+                    .in('sku', missingSkus)
+                
+                if (error) throw error
+
+                if (data && data.length) {
+                    setBaseSkusData(prev => {
+                        const next = { ...prev };
+                        data.forEach(r => {
+                            next[r.sku] = r;
+                        });
+                        return next;
+                    });
+                }
+            } catch (err) {
+                push(`Error fetching base SKUs: ${err.message}`, 'err')
+            }
+        }
+
+        fetchBaseSkus()
+    }, [matrixData, selectedPortal, isWebsitePortal, push])
+
     // Load portals on mount
     useEffect(() => {
         async function init() {
@@ -79,6 +159,7 @@ export default function CostingMatrix() {
                 single_packet_cost: Number(nlcData.single_packet_cost) || 15,
                 extra_packet_cost: Number(nlcData.extra_packet_cost) || 10,
                 jar_cost: Number(nlcData.jar_cost) || 20,
+                slayzo_jar_cost: Number(nlcData.slayzo_jar_cost) || 25,
             })
         }
         init()
@@ -145,7 +226,7 @@ export default function CostingMatrix() {
 
             let query = supabase
                 .from('v_costing_matrix')
-                .select('*', { count: 'exact' })
+                .select('*', { count: 'estimated' })
                 .eq('portal', selectedPortal)
                 .order('sku', { ascending: true })
                 .range(from, to)
@@ -305,6 +386,15 @@ export default function CostingMatrix() {
 
         return { shipFee, shipTotal, closingFee, referralPct, priceAtNLC, sellingPrice, useCategoryFee, useWeightFee, useAmountFee }
     }
+
+    // Dynamic Columns count for table colSpan
+    const extraColCount = settings.extra_column_labels?.length || 0
+    const constFeesCount = settings.const_fees?.length || 0
+    const shipCol = settings.has_shipping_fees ? 1 : 0
+    const closeCol = settings.has_closing_fees ? 1 : 0
+    const refCol = settings.has_category_fees ? 1 : 0
+    const wixCols = isWebsitePortal ? 2 : 0
+    const totalCols = 9 + extraColCount + constFeesCount + shipCol + closeCol + refCol + wixCols
 
     // --------- Settings save ---------
     async function savePortalSettings() {
@@ -578,7 +668,9 @@ export default function CostingMatrix() {
                 settings.has_category_fees ? 'Ref %' : null,
                 'Price@NLC',
                 ...finalFees.map(f => f.label),
-                'Selling Price'
+                'Selling Price',
+                isWebsitePortal ? 'Wix Base SKU' : null,
+                isWebsitePortal ? 'Wix Price Diff' : null
             ].filter(v => v !== null)
 
             let csvContent = headers.join(',') + '\n'
@@ -587,6 +679,21 @@ export default function CostingMatrix() {
             data.forEach(row => {
                 const calc = calculateRow(row)
                 const nlc = Number(row.sku_nlc) || 0
+
+                let baseSkuVal = ''
+                let priceDiffVal = ''
+                if (isWebsitePortal) {
+                    baseSkuVal = row.extra_meta?.wix_base_sku || ''
+                    if (baseSkuVal) {
+                        const baseRow = data.find(r => r.sku === baseSkuVal)
+                        if (baseRow) {
+                            const baseCalc = calculateRow(baseRow)
+                            priceDiffVal = (calc.sellingPrice - baseCalc.sellingPrice).toString()
+                        } else {
+                            priceDiffVal = 'N/A'
+                        }
+                    }
+                }
 
                 const line = [
                     `"${row.sku}"`,
@@ -601,7 +708,9 @@ export default function CostingMatrix() {
                     settings.has_category_fees ? `${calc.referralPct.toFixed(2)}%` : null,
                     Math.round(calc.priceAtNLC),
                     ...finalFees.map(f => `${f.value}%`),
-                    calc.sellingPrice
+                    calc.sellingPrice,
+                    isWebsitePortal ? `"${baseSkuVal}"` : null,
+                    isWebsitePortal ? priceDiffVal : null
                 ].filter(v => v !== null)
 
                 csvContent += line.join(',') + '\n'
@@ -1062,11 +1171,17 @@ export default function CostingMatrix() {
                                         <th key={f.label || i} style={{ textAlign: 'right' }}>{f.label}</th>
                                     ))}
                                     <th style={{ textAlign: 'right', background: 'var(--bg-alt)', fontWeight: 700 }}>Selling Price</th>
+                                    {isWebsitePortal && (
+                                        <>
+                                            <th style={{ textAlign: 'left' }}>Wix Base SKU</th>
+                                            <th style={{ textAlign: 'right', background: 'var(--bg-alt)', fontWeight: 700 }}>Wix Price Diff</th>
+                                        </>
+                                    )}
                                 </tr>
                             </thead>
                             <tbody>
                                 {loading && (
-                                    <tr><td colSpan="13" className="s" style={{ textAlign: 'center', padding: 20 }}>Loading…</td></tr>
+                                    <tr><td colSpan={totalCols} className="s" style={{ textAlign: 'center', padding: 20 }}>Loading…</td></tr>
                                 )}
                                 {!loading && matrixData.map(row => {
                                     const nlcAmount = Number(row.sku_nlc) || 0
@@ -1137,11 +1252,55 @@ export default function CostingMatrix() {
                                             <td style={{ textAlign: 'right', fontWeight: 700, background: 'var(--bg-alt)', color: 'var(--primary)', fontSize: '1.05em' }}>
                                                 {nlcAmount > 0 ? `₹${calc.sellingPrice}` : '—'}
                                             </td>
+                                            {isWebsitePortal && (() => {
+                                                let priceDiffContent = '—'
+                                                let diffStyle = { textAlign: 'right', fontWeight: 700, background: 'var(--bg-alt)', fontSize: '1.05em' }
+                                                const baseSkuCode = row.extra_meta?.wix_base_sku
+                                                if (baseSkuCode) {
+                                                    if (baseSkuCode === row.sku) {
+                                                        priceDiffContent = 'Self reference'
+                                                        diffStyle.color = 'var(--warning)'
+                                                    } else {
+                                                        const baseRow = matrixData.find(r => r.sku === baseSkuCode) || baseSkusData[baseSkuCode]
+                                                        if (baseRow) {
+                                                            const baseCalc = calculateRow(baseRow)
+                                                            const diff = calc.sellingPrice - baseCalc.sellingPrice
+                                                            priceDiffContent = `₹${diff}`
+                                                            diffStyle.color = diff < 0 ? 'var(--danger)' : 'var(--success)'
+                                                        } else {
+                                                            if (allPortalSkus.length > 0 && !allPortalSkus.includes(baseSkuCode)) {
+                                                                priceDiffContent = 'Invalid SKU'
+                                                                diffStyle.color = 'var(--danger)'
+                                                            } else {
+                                                                priceDiffContent = 'Loading price...'
+                                                                diffStyle.color = 'var(--muted)'
+                                                            }
+                                                        }
+                                                    }
+                                                }
+                                                return (
+                                                    <>
+                                                        <td>
+                                                            <input
+                                                                key={`${row.sku}_base`}
+                                                                defaultValue={row.extra_meta?.wix_base_sku || ''}
+                                                                onBlur={e => saveSkuPortalMeta(row.sku, 'wix_base_sku', e.target.value.trim(), true)}
+                                                                list="portal-skus-list"
+                                                                placeholder="Search Base SKU..."
+                                                                style={{ width: 140, padding: '4px 8px', fontSize: '0.9em', border: '1px solid var(--border)', borderRadius: 4, background: 'transparent' }}
+                                                            />
+                                                        </td>
+                                                        <td style={diffStyle}>
+                                                            {priceDiffContent}
+                                                        </td>
+                                                    </>
+                                                )
+                                            })()}
                                         </tr>
                                     )
                                 })}
                                 {!loading && matrixData.length === 0 && (
-                                    <tr><td colSpan={selectedPortal === 'flipkart' ? "11" : "15"} className="s" style={{ textAlign: 'center', padding: 20 }}>
+                                    <tr><td colSpan={totalCols} className="s" style={{ textAlign: 'center', padding: 20 }}>
                                         {activeSearch || categoryFilter
                                             ? 'No matching SKUs found.'
                                             : `No SKUs assigned to ${portals.find(p => p.code === selectedPortal)?.name || selectedPortal}. Assign portals in SKU Mappings.`}
@@ -1162,6 +1321,13 @@ export default function CostingMatrix() {
                     )}
                 </div>
             </div>
+            {isWebsitePortal && allPortalSkus.length > 0 && (
+                <datalist id="portal-skus-list">
+                    {allPortalSkus.map(sku => (
+                        <option key={sku} value={sku} />
+                    ))}
+                </datalist>
+            )}
         </div>
     )
 }
